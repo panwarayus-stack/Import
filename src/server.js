@@ -12,8 +12,28 @@ const http = require('node:http');
 const { bootstrap } = require('./bootstrap');
 const { createApp } = require('./app');
 
+function checkRuntime() {
+  // node:sqlite shipped in Node 22.5; without it the app needs the native better-sqlite3
+  // module. Fail with a human explanation instead of a stack trace deep in the worker.
+  const { driverInfo } = require('./lib/sqlite');
+  const drivers = driverInfo();
+  if (!drivers.betterSqlite3 && !drivers.nodeSqlite) {
+    console.error(
+      `SQLite unavailable: this process is Node ${process.version}, which has no built-in node:sqlite ` +
+        '(< 22.5) and the optional better-sqlite3 module could not be loaded. ' +
+        'Run Node 22.5+ (see .node-version / engines) or `npm rebuild better-sqlite3`.',
+    );
+    process.exit(1);
+  }
+  return drivers;
+}
+
 async function main() {
+  const drivers = checkRuntime();
   const ctx = bootstrap();
+  if (drivers.nodeSqlite && !drivers.betterSqlite3) {
+    ctx.logger.info("SQLite driver: Node's built-in node:sqlite (better-sqlite3 not installed)");
+  }
   const { config, db, logger, worker, scheduler, oauth, comments, openrouter } = ctx;
 
   const app = createApp({ config, db, logger, worker, scheduler, oauth, comments, openrouter });

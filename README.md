@@ -77,7 +77,7 @@ script (hook → context → features → CTA) ──► Piper/espeak TTS ──
 
 **Required**
 
-- Node.js **22+** (22.5+ gives a built-in SQLite fallback if `better-sqlite3` cannot compile)
+- Node.js **22.5+** (needed for the built-in `node:sqlite` fallback when `better-sqlite3` cannot compile) — managed platforms: see [`docs/deployment.md`](docs/deployment.md)
 - FFmpeg with `libx264`, `aac` and `libass` (for burned subtitles), plus `ffprobe` if available
 - Chromium/Chrome for Playwright — install with `npx playwright install --with-deps chromium`
 - A writable directory for SQLite, generated sites, videos and recordings
@@ -283,6 +283,12 @@ On a machine without Chromium the pipeline will validate and deploy the site, th
 `record_site` with an explicit instruction. It does **not** fabricate footage.
 
 ## Production deployment
+
+> Managed platform (Render, Railway, Fly, Coolify, Back4App…)? Read
+> [`docs/deployment.md`](docs/deployment.md) first. Two things trip every first deploy: a
+> `requirements.txt` in the repository root makes buildpacks pick **Python**, and Node **20** cannot
+> load `node:sqlite`. The repo now ships `.node-version`, `Procfile`, `nixpacks.toml` and
+> `render.yaml`, and the legacy bot lives in `legacy/telegram-bot/`.
 
 ### VPS (recommended)
 
@@ -521,7 +527,8 @@ public/                   dashboard (HTML/CSS/JS) + login page
 templates/prompts/        idea / site / repair / script prompt templates
 tests/                    node:test suites (76 tests)
 scripts/                  piper installer + dry-run demo script
-docs/                     OAuth walkthrough, operations, security model, free-tier notes
+docs/                     deployment, OAuth walkthrough, operations, security model, free-tier notes
+legacy/telegram-bot/      unrelated old Python bot, kept out of the build root on purpose
 data/ generated-sites/ generated-videos/ recordings/ credentials/   runtime (git-ignored)
 ```
 

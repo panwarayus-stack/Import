@@ -1,0 +1,20 @@
+# Nixpacks / Coolify / Northflank / Railway-style builders.
+# Node 22.5+ is required: the app uses the built-in node:sqlite when the
+# better-sqlite3 native module is unavailable.
+providers = ["node"]
+
+[variables]
+NODE_ENV = "production"
+NPM_CONFIG_PRODUCTION = "false"
+
+[phases.setup]
+nixPkgs = ["nodejs_22", "ffmpeg"]
+
+[phases.install]
+cmds = ["npm ci --include=optional --no-audit --no-fund"]
+
+[phases.build]
+cmds = ["node -e \"console.log('node', process.version)\""]
+
+[start]
+cmd = "npm start"
