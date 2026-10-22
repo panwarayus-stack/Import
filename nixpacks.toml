@@ -14,7 +14,7 @@ nixPkgs = ["nodejs_22", "ffmpeg"]
 cmds = ["npm ci --include=optional --no-audit --no-fund"]
 
 [phases.build]
-cmds = ["node -e \"console.log('node', process.version)\""]
+cmds = ["node -e \"console.log('node', process.version)\"" , "node scripts/preflight.js --strict"]
 
 [start]
 cmd = "npm start"

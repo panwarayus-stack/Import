@@ -38,6 +38,10 @@ RUN mkdir -p data generated-sites generated-videos recordings recordings logs cr
 
 USER node
 
+# Fail the image build (not the deploy) if the runtime cannot work: wrong Node, missing
+# dependencies, or stray Python project files that would make a builder pick Python.
+RUN node scripts/preflight.js
+
 EXPOSE 3000
 VOLUME ["/app/data", "/app/generated-sites", "/app/generated-videos", "/app/recordings", "/app/credentials"]
 

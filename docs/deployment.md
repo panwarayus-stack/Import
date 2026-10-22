@@ -10,8 +10,47 @@ If `requirements.txt` (or any Python entrypoint) sits in the repository root nex
 buildpack-based platforms detect **two** projects and may pick Python. That is exactly what happened
 on the first attempt: the builder installed Flask and produced a Python image.
 
-The stray Telegram bot now lives in `legacy/telegram-bot/` and is not part of this app. Keep the
-repository root free of `requirements.txt`, `Pipfile`, `pyproject.toml` and `.python-version`.
+The stray Telegram bot now lives in `legacy/telegram-bot/` **with an `.example` suffix on every
+file** (`main.py.example`, `keep_alive.py.example`, `requirements.txt.example`) and is not part of this
+app. There is no `*.py`, `requirements.txt`, `Pipfile` or `pyproject.toml` anywhere in the repository,
+so no builder can detect Python.
+
+If you ever see `/app/main.py` in a log — for example:
+
+```
+Traceback (most recent call last):
+  File "/app/main.py", line 3, in <module>
+    from keep_alive import keep_alive
+ModuleNotFoundError: No module named 'keep_alive'
+```
+
+then the running container is **not** this repository's current code. `main.py` has not existed in
+this repo since commit `81448e0`. Typical causes: the platform is still serving a previously built
+image, the service was created against an old commit, or the cache was not cleared. See
+[§4 Redeploying after this fix](#4-redeploying-after-this-fix).
+
+### The guard: `scripts/preflight.js`
+
+`npm start` now runs a preflight check first (`prestart`), and the image build runs it explicitly:
+
+```bash
+node scripts/preflight.js            # human-readable
+node scripts/preflight.js --json     # machine-readable
+node scripts/preflight.js --strict   # warnings become failures (used by CI / Docker build)
+```
+
+It fails (exit 1) when:
+
+- Node is older than 22.5,
+- no SQLite driver is available,
+- `express` / `dotenv` / `node-cron` / `playwright-core` are not installed,
+- a Python marker (`*.py`, `requirements.txt`, `Pipfile`, `pyproject.toml`, `setup.py`,
+  `poetry.lock`) exists outside `node_modules`, `.git` and `legacy/`,
+- `package.json` has no `start` script, `main` is missing, or `src/server.js` is absent.
+
+It warns about a missing `Dockerfile`/`.node-version` and about runtime directories that are not
+writable. In the container image the same script runs at build time, so a broken image cannot be
+published; on Render/Nixpacks it runs as part of the build command.
 
 Second cause: the platform defaulted to **Node 20**. This app needs **Node 22.5+** because it uses
 `node:sqlite` when the native `better-sqlite3` module is unavailable. The repo pins it three ways:
@@ -124,7 +163,30 @@ ephemeral, so run the worker on a box with a volume instead.
 | Session lost on every deploy | `SESSION_SECRET` unset | set it once and keep it stable |
 | Worker sleeping between requests | free tier scale-to-zero | always-on instance; the pipeline needs minutes of uninterrupted CPU |
 
-## 4. Post-deploy checklist
+## 4. Redeploying after this fix
+
+Because the container in the traceback was running `/app/main.py`, the deploy pipeline is still on an
+old commit/image. Do all of the following, in order:
+
+1. **Confirm the branch and commit.** Deploy `main`; the newest commit must be `81448e0` or later.
+   `git ls-tree --name-only main` must **not** list `main.py` or `requirements.txt`.
+2. **Clear the build cache** (Render: *Manual Deploy → Clear build cache & deploy*; Railway:
+   *Redeploy → Clear build cache*; Coolify: *Rebuild without cache*).
+3. **Check the service type.** If the service was created as a Python/Flask app, its start command is
+   often a fixed `python main.py` and its environment has a `PYTHON_VERSION`. Delete the service and
+   create a new **Web Service / Node** one pointing at this repo — editing the start command is not
+   always enough, because the build command may still be `pip install -r requirements.txt`.
+4. **Set the start command explicitly:** `npm start`. Build command:
+   `npm ci --include=optional --no-audit --no-fund`.
+5. **Set `NODE_VERSION=22.22.3`** (or confirm the builder reads `.node-version`, which contains `22`).
+6. Watch the build log for one of these two lines — they mean the new code is in use:
+   - `Preflight OK` / `· SQLite driver: node:sqlite`
+   - `SQLite driver: Node's built-in node:sqlite`
+   If you instead see `pip install` or `Successfully installed flask`, the platform is still running
+   the old detection: go back to step 3.
+7. After the deploy, `curl https://<your-app>/healthz` should return JSON with `"ok":true`.
+
+## 5. Post-deploy checklist
 
 ```bash
 curl -fsS https://your-app.example.com/healthz          # {"ok":true,...}
@@ -139,7 +201,7 @@ Then in the browser:
 4. Queue one manual job and watch it to `done` (or to an explicit, explained failure).
 5. Only then enable the scheduler and auto-enqueue.
 
-## 5. Things this project will not pretend to be
+## 6. Things this project will not pretend to be
 
 - A serverless deployment. Recording + encoding exceed typical function timeouts.
 - A free 24/7 host. Sleeping instances break the loop; the docs and dashboard say so.
