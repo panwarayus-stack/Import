@@ -331,6 +331,24 @@ function loadConfig(overrides = {}) {
   if (!fs.existsSync(merged.paths.root)) {
     merged.warnings.push('Project root not found at runtime (unexpected).');
   }
+  // Hosting platforms expose a public URL; if BASE_URL still points at localhost the OAuth
+  // redirect and links will be wrong even though the app itself boots fine.
+  if (merged.isProduction && /localhost|127\.0\.0\.1/.test(merged.baseUrl)) {
+    merged.warnings.push(
+      `BASE_URL is ${merged.baseUrl} in production — set it to your public https URL so OAuth redirects and dashboard links work.`,
+    );
+  }
+  if (merged.isProduction && merged.worker.enabled) {
+    const dbDir = path.dirname(merged.paths.db);
+    try {
+      fs.mkdirSync(dbDir, { recursive: true });
+      fs.accessSync(dbDir, fs.constants.W_OK);
+    } catch {
+      merged.warnings.push(
+        `Database directory ${dbDir} is not writable — attach a persistent disk or change DATABASE_PATH, otherwise every restart loses the database.`,
+      );
+    }
+  }
   return merged;
 }
 

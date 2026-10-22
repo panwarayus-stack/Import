@@ -1,0 +1,49 @@
+# Render blueprint (optional): https://render.com/docs/blueprint-spec
+# Secrets are marked sync:false — set them in the dashboard, never in git.
+services:
+  - type: web
+    name: shorts-factory
+    runtime: node
+    plan: starter          # free instances sleep; the worker needs an always-on box
+    region: frankfurt
+    buildCommand: npm ci --include=optional --no-audit --no-fund
+    startCommand: npm start
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 22.22.3
+      - key: NODE_ENV
+        value: production
+      - key: HOST
+        value: 0.0.0.0
+      - key: WORKER_ENABLED
+        value: true
+      - key: DEPLOY_PROVIDER
+        value: local
+      - key: DASHBOARD_PASSWORD
+        sync: false
+      - key: SESSION_SECRET
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: DATABASE_PATH
+        value: /var/data/factory.sqlite
+      - key: SITES_DIR
+        value: /var/data/generated-sites
+      - key: VIDEOS_DIR
+        value: /var/data/generated-videos
+      - key: RECORDINGS_DIR
+        value: /var/data/recordings
+      - key: LOGS_DIR
+        value: /var/data/logs
+      - key: CREDENTIALS_DIR
+        value: /var/data/credentials
+    disk:
+      name: factory-data
+      mountPath: /var/data
+      sizeGB: 10
