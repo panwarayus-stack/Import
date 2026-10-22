@@ -1,0 +1,45 @@
+{
+  "name": "ai-website-shorts-factory",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Automated pipeline that turns YouTube comments into live websites and vertical YouTube Shorts.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "worker": "node src/cli.js worker",
+    "scheduler": "node src/cli.js worker --scheduler",
+    "init": "node src/cli.js init",
+    "healthcheck": "node src/cli.js healthcheck",
+    "generate": "node src/cli.js generate",
+    "run-once": "node src/cli.js run-once",
+    "demo:seed": "node src/cli.js seed-demo",
+    "demo:dry-run": "bash scripts/dry-run-demo.sh",
+    "test": "node --test tests/*.test.js",
+    "test:watch": "node --test --watch tests/*.test.js",
+    "oauth:google": "node src/cli.js google-auth",
+    "doctor": "node src/cli.js doctor"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "node-cron": "^3.0.3",
+    "playwright-core": "^1.49.1"
+  },
+  "optionalDependencies": {
+    "@sparticuz/chromium": "^131.0.1",
+    "better-sqlite3": "^11.10.0"
+  },
+  "keywords": [
+    "youtube-shorts",
+    "automation",
+    "openrouter",
+    "playwright",
+    "ffmpeg",
+    "express",
+    "sqlite"
+  ]
+}

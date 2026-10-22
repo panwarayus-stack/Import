@@ -1,0 +1,43 @@
+# dependencies
+node_modules/
+.pnp/
+.pnp.js
+
+# secrets & credentials — never commit
+.env
+.env.*
+!.env.example
+credentials/*
+!credentials/.gitkeep
+*token*.json
+service-account*.json
+client_secret*.json
+
+# runtime data
+data/*
+!data/.gitkeep
+logs/*
+!logs/.gitkeep
+
+# generated artifacts (large / reproducible)
+generated-sites/*
+!generated-sites/.gitkeep
+generated-videos/*
+!generated-videos/.gitkeep
+recordings/*
+!recordings/.gitkeep
+tmp/
+.cache/
+build/
+dist/
+
+# test / tooling output
+coverage/
+playwright-report/
+test-results/
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

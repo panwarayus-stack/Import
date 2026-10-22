@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AI Website &amp; Shorts Factory — Dashboard</title>
+<meta name="description" content="Monitor and control the automated YouTube comment → website → Shorts pipeline." />
+<link rel="icon" href="/favicon.ico" type="image/svg+xml" />
+<link rel="stylesheet" href="/assets/styles.css" />
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<div class="app-shell">
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="#overview">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" aria-hidden="true">
+            <path d="M4 5h10a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3H4V5z" stroke="currentColor" stroke-width="1.6"/>
+            <path d="M17 10l3-2v8l-3-2" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+            <circle cx="9" cy="10" r="1.6" fill="currentColor"/>
+          </svg>
+        </span>
+        <span>Shorts Factory <small>comment → website → video</small></span>
+      </a>
+
+      <nav class="tabs" role="tablist" aria-label="Dashboard sections">
+        <button class="tab" role="tab" id="tab-overview" aria-controls="view-overview" aria-selected="true" data-view="overview">Overview</button>
+        <button class="tab" role="tab" id="tab-jobs" aria-controls="view-jobs" aria-selected="false" data-view="jobs">Jobs</button>
+        <button class="tab" role="tab" id="tab-comments" aria-controls="view-comments" aria-selected="false" data-view="comments">Comments</button>
+        <button class="tab" role="tab" id="tab-logs" aria-controls="view-logs" aria-selected="false" data-view="logs">Logs</button>
+        <button class="tab" role="tab" id="tab-settings" aria-controls="view-settings" aria-selected="false" data-view="settings">Settings</button>
+      </nav>
+
+      <div class="topbar-actions">
+        <span id="global-status" class="badge neutral no-dot">connecting…</span>
+        <button class="btn small ghost" id="logout-btn" type="button">Sign out</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="main" id="main">
+    <!-- ------------------------------------------------------------ overview -->
+    <section class="panel-view" id="view-overview" role="tabpanel" aria-labelledby="tab-overview">
+      <div class="page-head">
+        <div>
+          <h1>Automation overview</h1>
+          <p>Every comment is treated as untrusted input. Websites are generated, tested in a real browser, deployed, recorded and turned into a vertical Short.</p>
+        </div>
+        <div class="btn-row">
+          <button class="btn" id="refresh-btn" type="button">Refresh</button>
+          <button class="btn primary" id="run-once-btn" type="button">Generate now</button>
+        </div>
+      </div>
+
+      <div id="warnings-container" class="grid" style="margin-bottom: 1rem"></div>
+
+      <div class="card" style="margin-bottom: 1rem">
+        <div class="worker-status">
+          <div class="worker-main">
+            <span class="status-dot" id="worker-dot" aria-hidden="true"></span>
+            <div>
+              <div class="worker-title" id="worker-title">Worker status</div>
+              <div class="worker-sub" id="worker-sub">Waiting for the first status update…</div>
+            </div>
+          </div>
+          <div class="btn-row">
+            <button class="btn small" id="pause-btn" type="button">Pause</button>
+            <button class="btn small" id="resume-btn" type="button">Resume</button>
+            <button class="btn small" id="poll-btn" type="button">Poll comments</button>
+          </div>
+        </div>
+        <div style="margin-top: 1rem">
+          <div class="progress"><span id="job-progress-bar" style="width: 0%"></span></div>
+          <div class="progress-meta">
+            <span id="job-progress-label">No active job</span>
+            <span id="job-stage-label"></span>
+          </div>
+          <div class="stage-track" id="stage-track"></div>
+        </div>
+      </div>
+
+      <div class="grid stats" id="stats-grid" style="margin-bottom: 1rem"></div>
+
+      <div class="grid side" style="margin-bottom: 1rem">
+        <div class="card">
+          <div class="card-head">
+            <h2>Recent jobs</h2>
+            <a href="#jobs" class="small-text" data-goto="jobs">View all</a>
+          </div>
+          <div id="recent-jobs"></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>Integrations</h2></div>
+          <div class="capabilities" id="capabilities"></div>
+          <div class="section-divider"></div>
+          <dl class="kv" id="quota-kv"></dl>
+        </div>
+      </div>
+
+      <div class="grid two" style="margin-bottom: 1rem">
+        <div class="card">
+          <div class="card-head">
+            <h2>Generate from a comment</h2>
+            <span class="hint">Manual run</span>
+          </div>
+          <form id="manual-form">
+            <div class="field">
+              <label for="manual-comment">Comment text</label>
+              <textarea id="manual-comment" name="comment" placeholder="Paste a YouTube comment, e.g. “I wish there was a simple meal planner for a family on a budget”" required maxlength="2000"></textarea>
+              <span class="help">Stored as untrusted input, filtered for spam and prompt injection.</span>
+            </div>
+            <div class="form-grid" style="margin-top: 0.8rem">
+              <div class="field">
+                <label for="manual-author">Author label</label>
+                <input type="text" id="manual-author" name="author" placeholder="@viewer" maxlength="60" />
+              </div>
+              <div class="field" style="align-content: end">
+                <button class="btn primary" type="submit">Queue job</button>
+              </div>
+            </div>
+          </form>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>Latest websites</h2>
+            <a href="#jobs" class="small-text" data-goto="jobs">History</a>
+          </div>
+          <div class="grid" id="latest-sites" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.7rem"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------------------------------------------------------------- jobs -->
+    <section class="panel-view" id="view-jobs" role="tabpanel" aria-labelledby="tab-jobs" hidden>
+      <div class="page-head">
+        <div>
+          <h1>Jobs</h1>
+          <p>Full pipeline history. Retry a failed job, cancel a running one, or open a single job to inspect logs and artifacts.</p>
+        </div>
+        <div class="btn-row">
+          <input type="search" id="job-search" placeholder="Search id, comment or title" aria-label="Search jobs" style="min-width: 220px" />
+          <select id="job-status-filter" aria-label="Filter by status">
+            <option value="all">All statuses</option>
+            <option value="queued">Queued</option>
+            <option value="running">Running</option>
+            <option value="retrying">Retrying</option>
+            <option value="succeeded">Succeeded</option>
+            <option value="failed">Failed</option>
+            <option value="canceled">Canceled</option>
+          </select>
+          <button class="btn" id="jobs-refresh" type="button">Refresh</button>
+        </div>
+      </div>
+      <div id="jobs-table"></div>
+      <div class="btn-row" style="justify-content: center; margin-top: 1rem">
+        <button class="btn" id="jobs-more" type="button" hidden>Load more</button>
+      </div>
+    </section>
+
+    <!-- ------------------------------------------------------------ comments -->
+    <section class="panel-view" id="view-comments" role="tabpanel" aria-labelledby="tab-comments" hidden>
+      <div class="page-head">
+        <div>
+          <h1>Comments</h1>
+          <p>Comments are fetched with the official YouTube Data API. Duplicates, spam and suspected prompt injection are rejected before anything is generated.</p>
+        </div>
+        <div class="btn-row">
+          <button class="btn" id="comments-refresh" type="button">Refresh</button>
+          <button class="btn primary" id="comments-poll" type="button">Poll now</button>
+        </div>
+      </div>
+      <div class="grid stats" id="comment-stats" style="margin-bottom: 1rem"></div>
+      <div id="comments-table"></div>
+    </section>
+
+    <!-- ---------------------------------------------------------------- logs -->
+    <section class="panel-view" id="view-logs" role="tabpanel" aria-labelledby="tab-logs" hidden>
+      <div class="page-head">
+        <div>
+          <h1>Logs</h1>
+          <p>Structured, searchable history. Secrets are scrubbed before anything is stored.</p>
+        </div>
+      </div>
+      <div class="card">
+        <div class="log-toolbar">
+          <input type="search" id="log-search" placeholder="Search message or scope" aria-label="Search logs" />
+          <select id="log-level" aria-label="Filter by level">
+            <option value="all">All levels</option>
+            <option value="error">Error</option>
+            <option value="warn">Warning</option>
+            <option value="info">Info</option>
+            <option value="debug">Debug</option>
+          </select>
+          <select id="log-job" aria-label="Filter by job">
+            <option value="">All jobs</option>
+          </select>
+          <button class="btn small" id="logs-refresh" type="button">Refresh</button>
+          <label class="switch" style="margin-left: auto"><input type="checkbox" id="logs-live" checked /> Live</label>
+        </div>
+        <div class="log-list" id="log-list" aria-live="polite"></div>
+      </div>
+    </section>
+
+    <!-- ------------------------------------------------------------ settings -->
+    <section class="panel-view" id="view-settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
+      <div class="page-head">
+        <div>
+          <h1>Settings</h1>
+          <p>Runtime automation settings are stored in SQLite. Credentials and model choices are environment variables, read-only here.</p>
+        </div>
+      </div>
+
+      <div id="settings-notices" class="grid" style="margin-bottom: 1rem"></div>
+
+      <div class="grid two">
+        <div>
+          <form class="form-section" id="auto-settings-form">
+            <h3>Automation</h3>
+            <p class="desc">Limits protect API quotas and keep output quality high.</p>
+            <div class="form-grid">
+              <div class="field">
+                <label for="set-daily-jobs">Daily generation limit</label>
+                <input type="number" id="set-daily-jobs" min="0" max="100" step="1" />
+                <span class="help">Jobs created per day.</span>
+              </div>
+              <div class="field">
+                <label for="set-daily-uploads">Daily upload limit</label>
+                <input type="number" id="set-daily-uploads" min="0" max="100" step="1" />
+                <span class="help">Uploads per day (quota aware).</span>
+              </div>
+              <div class="field">
+                <label for="set-poll">Comment poll interval (minutes)</label>
+                <input type="number" id="set-poll" min="1" max="1440" step="1" />
+                <span class="help">Applied to the scheduler on next start.</span>
+              </div>
+              <div class="field">
+                <label for="set-duration">Target video length (seconds)</label>
+                <input type="number" id="set-duration" min="12" max="57" step="1" />
+                <span class="help">Shorts must stay under 60 seconds.</span>
+              </div>
+              <div class="field">
+                <label for="set-queue">Max jobs in queue</label>
+                <input type="number" id="set-queue" min="1" max="200" step="1" />
+              </div>
+              <div class="field">
+                <label for="set-model">OpenRouter model</label>
+                <input type="text" id="set-model" list="model-options" placeholder="use the environment default" maxlength="120" />
+                <datalist id="model-options"></datalist>
+                <span class="help">Free models only are recommended (ids ending in <span class="inline-code">:free</span>).</span>
+              </div>
+              <div class="field">
+                <label for="set-privacy">Upload privacy</label>
+                <select id="set-privacy">
+                  <option value="private">Private (recommended)</option>
+                  <option value="unlisted">Unlisted</option>
+                  <option value="public">Public</option>
+                </select>
+                <span class="help">Public requires ALLOW_PUBLIC_UPLOAD=true in the environment.</span>
+              </div>
+            </div>
+            <div class="section-divider"></div>
+            <div class="grid" style="gap: 0.5rem">
+              <label class="switch"><input type="checkbox" id="set-auto-enqueue" /> Auto-enqueue a job when new eligible comments arrive</label>
+              <label class="switch"><input type="checkbox" id="set-comment-polling" /> Scheduled comment polling enabled</label>
+          </div>
+            <div class="btn-row" style="margin-top: 1rem">
+              <button class="btn primary" type="submit">Save settings</button>
+              <button class="btn" type="button" id="settings-reset">Reload</button>
+            </div>
+          </form>
+
+          <div class="form-section" id="oauth-card">
+            <h3>YouTube channel</h3>
+            <p class="desc">OAuth 2.0 with the official Data API v3. Tokens are stored server-side only.</p>
+            <div id="oauth-state"></div>
+            <div class="btn-row" style="margin-top: 0.9rem">
+              <a class="btn primary" id="oauth-connect" href="/auth/google">Connect channel</a>
+              <button class="btn danger" id="oauth-disconnect" type="button">Disconnect</button>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <div class="form-section">
+            <h3>Environment configuration</h3>
+            <p class="desc">Set these in <span class="inline-code">.env</span> (or your process manager) and restart. Secrets are never sent to this page.</p>
+            <div id="env-config"></div>
+          </div>
+          <div class="form-section">
+            <h3>Pipeline checkpoints</h3>
+            <p class="desc">Changes here apply immediately to new jobs.</p>
+            <dl class="kv" id="checkpoints"></dl>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="modal-backdrop" id="modal" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-head">
+      <h2 id="modal-title">Job</h2>
+      <button class="icon-btn" id="modal-close" type="button" aria-label="Close dialog">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+  </div>
+</div>
+
+<div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+
+<script src="/assets/app.js"></script>
+</body>
+</html>
