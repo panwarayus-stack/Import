@@ -1,17 +1,42 @@
-# Legacy Telegram bot (not part of the factory)
+# Legacy Telegram bot (not part of the factory) — archived as `.example`
 
-These three files predate the AI Website & Shorts Factory and are kept only for reference:
+These files predate the AI Website & Shorts Factory. They are kept for reference only, and every
+filename ends in `.example` **on purpose**:
 
 | File | What it was |
 |---|---|
-| `main.py` | A tiny `pytelegrambotapi` echo bot with an `/admin` command |
-| `Keep_alive.pt` | A Flask "keep alive" helper (the extension `.pt` is a typo for `.py`) |
-| `requirements.txt` | `flask`, `pytelegrambotapi`, `psutil` |
+| `main.py.example` | A tiny `pytelegrambotapi` echo bot with an `/admin` command |
+| `keep_alive.py.example` | A Flask "keep alive" helper (originally misnamed `Keep_alive.pt`) |
+| `requirements.txt.example` | `flask`, `pytelegrambotapi`, `psutil` |
 
-They were moved out of the repository root because build platforms detect a Python project whenever
-`requirements.txt` sits next to `package.json` — which is exactly what happened on the first deploy
-attempt: the builder installed Flask and started a Python image instead of the Node application.
+## Why `.example`
 
-**Nothing in the factory imports these files.** If you still want the bot, treat this folder as its
-own project: rename `Keep_alive.pt` to `keep_alive.py`, create the bot with BotFather, set
-`BOT_TOKEN` and `ADMIN_ID`, and deploy it separately. Do not add it back to the repository root.
+Two deploys of this repository built a **Python** image instead of the Node app:
+
+1. `requirements.txt` and `main.py` sat in the repository root next to `package.json`, so the
+   buildpack detected a Python project and ran `pip install -r requirements.txt`.
+2. Even after moving them to `legacy/`, some builders scan **recursively** for `main.py`/`*.py`.
+   The deployed container then ran `/app/main.py` and crashed with
+   `ModuleNotFoundError: No module named 'keep_alive'` (the helper file was called
+   `Keep_alive.pt`, so it was never importable).
+
+There is now **no file in this repository** that ends in `.py`, is named `requirements.txt`,
+`Pipfile` or `pyproject.toml`. The Node application is the only thing a builder can detect.
+
+## If you actually want the bot
+
+Treat it as a separate project — do not revive it inside this repository:
+
+```bash
+mkdir ~/telegram-bot && cd ~/telegram-bot
+cp /path/to/Import/legacy/telegram-bot/main.py.example        main.py
+cp /path/to/Import/legacy/telegram-bot/keep_alive.py.example  keep_alive.py
+cp /path/to/Import/legacy/telegram-bot/requirements.txt.example requirements.txt
+python -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt
+export BOT_TOKEN=... ADMIN_ID=...
+python main.py
+```
+
+The original crash came from the helper's extension (`.pt` instead of `.py`); copying it to
+`keep_alive.py` fixes the import. `keep_alive.py` starts Flask on port 8080, which is useful only on
+a platform that expects an HTTP port — on a VPS you can delete that import entirely.

@@ -265,7 +265,7 @@ public if this app is reachable from the internet. Always labelled *local previe
 ## Local testing and dry-run
 
 ```bash
-npm test                      # 76 tests: unit + integration, no network required
+npm test                      # 80 tests: unit + integration, no network required
 node src/cli.js selftest      # validate the built-in offline site template
 node src/cli.js seed-demo     # insert 4 safe demo comments
 npm run run-once              # process one job through the worker
@@ -277,6 +277,8 @@ Testing tools:
 
 - `node src/cli.js filter-test --comment "..."` → shows sanitization and eligibility decision.
 - `npm run generate -- --comment "..."` → full pipeline for one manual comment.
+- `npm run preflight` → verifies Node version, SQLite driver, dependencies and that no Python
+  project files can make a builder pick the wrong runtime (also runs automatically before `npm start`).
 - `node src/cli.js healthcheck --json` → exit code 1 when the worker heartbeat is stale.
 
 On a machine without Chromium the pipeline will validate and deploy the site, then stop at
@@ -495,6 +497,9 @@ Report vulnerabilities privately rather than opening a public issue.
 |---|---|
 | `Unable to launch Chromium … libnspr4.so` | `npx playwright install --with-deps chromium` (needs root) or install `libnss3 libnspr4 libasound2 libgbm1 libxkbcommon0` |
 | `better-sqlite3` build fails / no module | Node ≥22.5 falls back to built-in `node:sqlite` automatically; or install build tools and `npm rebuild better-sqlite3` |
+| Deploy log shows `pip install` / `flask`, or `File "/app/main.py"` → `ModuleNotFoundError` | The platform is building/running an old Python image. Clear the build cache, recreate the service as a Node web service with start command `npm start`, set `NODE_VERSION=22.22.3`. Check with `npm run preflight`. See [`docs/deployment.md`](docs/deployment.md#4-redeploying-after-this-fix) |
+| `SQLite unavailable … Node v20` | The builder ignored `.node-version`; set `NODE_VERSION=22.22.3` in the platform env |
+| `Database directory … is not writable` | Attach a persistent disk/volume and set `DATABASE_PATH` + the `*_DIR` variables (see `docs/deployment.md`) |
 | `FFmpeg is not installed` | Install ffmpeg, or set `FFMPEG_PATH`; `node src/cli.js doctor` shows the resolved path |
 | `No usable TTS engine` | Install Piper (`scripts/install-piper.sh`), or set `TTS_ENGINE=espeak` after `apt-get install espeak-ng` |
 | `Piper produced no audio` | `PIPER_MODEL` must point at a `.onnx` voice file that exists |
@@ -525,8 +530,8 @@ src/
   routes/                 auth, api, dashboard
 public/                   dashboard (HTML/CSS/JS) + login page
 templates/prompts/        idea / site / repair / script prompt templates
-tests/                    node:test suites (76 tests)
-scripts/                  piper installer + dry-run demo script
+tests/                    node:test suites (80 tests)
+scripts/                  piper installer, dry-run demo, deploy preflight guard
 docs/                     deployment, OAuth walkthrough, operations, security model, free-tier notes
 legacy/telegram-bot/      unrelated old Python bot, kept out of the build root on purpose
 data/ generated-sites/ generated-videos/ recordings/ credentials/   runtime (git-ignored)

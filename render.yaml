@@ -6,7 +6,7 @@ services:
     runtime: node
     plan: starter          # free instances sleep; the worker needs an always-on box
     region: frankfurt
-    buildCommand: npm ci --include=optional --no-audit --no-fund
+    buildCommand: npm ci --include=optional --no-audit --no-fund && node scripts/preflight.js --strict
     startCommand: npm start
     healthCheckPath: /healthz
     autoDeploy: true
