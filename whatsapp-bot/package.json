@@ -1,0 +1,36 @@
+{
+  "name": "whatsapp-business-outreach-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Unofficial WhatsApp business outreach bot: Baileys + OpenRouter (free router) + Gemini Flash fallback + Supabase PostgreSQL, with owner-only controls and a daily Asia/Kolkata report.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "doctor": "node index.js --doctor",
+    "reset-session": "node index.js --reset-session",
+    "test": "node --test test.js",
+    "check": "node --check index.js && node --check ai.js && node --check database.js && node --check test.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "7.0.0-rc14",
+    "dotenv": "^18.0.0",
+    "pg": "^8.23.1",
+    "pino": "^9.6.0"
+  },
+  "keywords": [
+    "whatsapp",
+    "baileys",
+    "outreach",
+    "openrouter",
+    "gemini",
+    "supabase",
+    "postgresql"
+  ],
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.11"
+  }
+}
