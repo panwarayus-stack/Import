@@ -1,0 +1,35 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# WhatsApp session / auth files (these ARE credentials)
+auth/
+auth/**/*
+*.json.session
+creds.json
+session-*.json
+pre-key-*.json
+app-state-sync-*.json
+sender-key-*.json
+
+# Logs and generated private data
+logs/
+*.log
+npm-debug.log*
+pids/
+*.pid
+backups/
+exports/
+
+# Dependencies / tooling
+node_modules/
+.npm/
+coverage/
+.cache/
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
