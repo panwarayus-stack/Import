@@ -53,6 +53,7 @@ script (hook → context → features → CTA) ──► Piper/espeak TTS ──
 - [Known limitations](#known-limitations)
 - [Troubleshooting](#troubleshooting)
 - [Project structure](#project-structure)
+- [WhatsApp outreach bot (separate app)](whatsapp-bot/README.md)
 - [License](#license)
 
 ---
@@ -536,6 +537,18 @@ docs/                     deployment, OAuth walkthrough, operations, security mo
 legacy/telegram-bot/      unrelated old Python bot, kept out of the build root on purpose
 data/ generated-sites/ generated-videos/ recordings/ credentials/   runtime (git-ignored)
 ```
+
+## WhatsApp outreach bot (separate app)
+
+This repository also contains a second, independent application:
+[`whatsapp-bot/`](whatsapp-bot/README.md). It is not part of the Shorts Factory
+pipeline and shares no code with it — a small business's WhatsApp outreach bot
+(Baileys + Supabase PostgreSQL + OpenRouter free router with a Gemini Flash
+fallback, owner-only commands, a 21:00 Asia/Kolkata report and a `DRY_RUN` mode).
+
+It has its own `package.json`, environment file and test suite
+(`cd whatsapp-bot && npm ci && npm test` → 54 tests). Nothing in the setup above
+is required to run it, and it does not affect `npm start` in the repository root.
 
 ## License
 
