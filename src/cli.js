@@ -62,6 +62,7 @@ Commands:
   healthcheck               Exit non-zero when the worker is unhealthy
   google-auth --import FILE Import Google OAuth tokens exported to a JSON file
   reset --yes               Delete all jobs, websites, videos, uploads (keeps schema)
+  telegram <command>        Telegram corpus inventory/search (sync, sources, stats, inspect, search, health)
 
 Options:
   --author "@name"          Comment author label for manual comments
@@ -342,6 +343,128 @@ async function cmdSelftest() {
   process.exit(result.ok && errors.length === 0 ? 0 : 1);
 }
 
+/* ------------------------------------------------------------- telegram */
+
+async function cmdTelegram(args) {
+  const sub = args._[1] || 'help';
+  switch (sub) {
+    case 'health': {
+      const { buildManifest } = require('./lib/telegram/sources');
+      const manifest = await buildManifest({ preferLive: true });
+      console.log(JSON.stringify({
+        source: manifest.source,
+        totalUniqueFiles: manifest.totalUniqueFiles,
+        totalSizeBytes: manifest.totalSizeBytes,
+        duplicatesSkipped: manifest.duplicatesSkipped.length,
+        buckets: manifest.buckets,
+        error: manifest.error,
+      }, null, 2));
+      return undefined;
+    }
+    case 'sources': {
+      const { buildManifest } = require('./lib/telegram/sources');
+      const manifest = await buildManifest({ preferLive: true });
+      console.log(JSON.stringify({
+        source: manifest.source,
+        totalUniqueFiles: manifest.totalUniqueFiles,
+        totalSizeBytes: manifest.totalSizeBytes,
+        duplicateBuckets: manifest.duplicateBuckets,
+        duplicatesSkipped: manifest.duplicatesSkipped,
+        sources: manifest.sources,
+      }, null, 2));
+      return undefined;
+    }
+    case 'stats': {
+      const { buildManifest } = require('./lib/telegram/sources');
+      const manifest = await buildManifest({ preferLive: true });
+      const byType = {}, byBucket = {};
+      for (const s of manifest.sources) {
+        byType[s.type] = (byType[s.type] || 0) + 1;
+        byBucket[s.bucket] = (byBucket[s.bucket] || 0) + 1;
+      }
+      console.log(JSON.stringify({
+        source: manifest.source,
+        totalUniqueFiles: manifest.totalUniqueFiles,
+        totalSizeBytes: manifest.totalSizeBytes,
+        duplicatesSkipped: manifest.duplicatesSkipped.length,
+        byType,
+        byBucket,
+        searchableFiles: manifest.sources.filter((s) => s.searchable).length,
+        error: manifest.error,
+      }, null, 2));
+      return undefined;
+    }
+    case 'sync': {
+      const { buildManifest } = require('./lib/telegram/sources');
+      const { openStore } = require('./lib/telegram/store');
+      const manifest = await buildManifest({ preferLive: true });
+      const config = require('./config').getConfig();
+      const store = openStore(config.telegram.syncDir);
+      store.saveManifest(manifest);
+      store.close();
+      console.log(JSON.stringify({
+        ok: true,
+        source: manifest.source,
+        totalUniqueFiles: manifest.totalUniqueFiles,
+        totalSizeBytes: manifest.totalSizeBytes,
+        duplicatesSkipped: manifest.duplicatesSkipped.length,
+        error: manifest.error,
+      }, null, 2));
+      return undefined;
+    }
+    case 'inspect': {
+      const { inspectSource } = require('./lib/telegram/search');
+      const bucket = args._[2];
+      const path = args._[3];
+      if (!bucket || !path) {
+        console.error('Usage: node src/cli.js telegram inspect <bucket> <path>');
+        process.exit(2);
+        return undefined;
+      }
+      const info = await inspectSource({ bucket, path });
+      if (!info) {
+        console.error(`Source not found: ${bucket}/${path}`);
+        process.exit(1);
+        return undefined;
+      }
+      console.log(JSON.stringify({ ok: true, ...info }, null, 2));
+      return undefined;
+    }
+    case 'search': {
+      const { search } = require('./lib/telegram/search');
+      const q = args._.slice(2).join(' ');
+      if (!q) {
+        console.error('Usage: node src/cli.js telegram search <query>');
+        process.exit(2);
+        return undefined;
+      }
+      const result = await search({
+        query: q,
+        limit: Number.parseInt(args.limit, 10) || 50,
+        offset: Number.parseInt(args.offset, 10) || 0,
+        bucket: args.bucket || undefined,
+      });
+      console.log(JSON.stringify({ ok: true, ...result }, null, 2));
+      return undefined;
+    }
+    case 'help':
+    default:
+      console.log(`Usage: node src/cli.js telegram <command>\n
+Commands:
+  health              Show driver/HF reachability + manifest summary
+  sources             List the de-duplicated corpus manifest
+  stats               Corpus statistics
+  sync                Rebuild and persist the de-duplicated manifest
+  inspect <bucket> <path>   Inspect one source's schema + counts
+  search <q>          Keyword search across the corpus
+Options:
+  --limit N           Max results per search (default 50)
+  --offset N          Result offset
+  --bucket B          Restrict search to one bucket`);
+      return sub === 'help' ? undefined : (process.exit(2), undefined);
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv);
   const command = args._[0];
@@ -368,6 +491,8 @@ async function main() {
       return cmdReset(args);
     case 'selftest':
       return cmdSelftest();
+    case 'telegram':
+      return cmdTelegram(args);
     case 'filter-test': {
       const evaluation = evaluateComment(String(args.comment || ''), { minLength: 12 });
       console.log(JSON.stringify(evaluation, null, 2));
