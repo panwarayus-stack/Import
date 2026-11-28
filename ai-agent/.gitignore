@@ -1,7 +1,0 @@
-__pycache__/
-*.pyc
-.env
-.pytest_cache/
-.gradio/
-flagged/
-data/

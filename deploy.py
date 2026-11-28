@@ -3,11 +3,11 @@
 Deploy the AI Agent to a Hugging Face Space (ZeroGPU).
 
     export HF_TOKEN=hf_your_new_token      # shell only — never commit it
-    python ai-agent/deploy.py --space nezuhub/ai-agent.txt
+    python deploy.py --space nezuhub/ai-agent.txt
 
     # optional
-    python ai-agent/deploy.py --space nezuhub/ai-agent.txt --restart
-    python ai-agent/deploy.py --space nezuhub/ai-agent.txt --secret HF_TOKEN=hf_...
+    python deploy.py --space nezuhub/ai-agent.txt --restart
+    python deploy.py --space nezuhub/ai-agent.txt --secret HF_TOKEN=hf_...
 
 Notes
 -----

@@ -1,6 +1,6 @@
 name: Deploy AI Agent to Hugging Face Space
 
-# Uploads ai-agent/ to the Space at huggingface.co/spaces/nezuhub/ai-agent.txt.
+# Uploads the repo root to the Space at huggingface.co/spaces/nezuhub/ai-agent.txt.
 # Runs on GitHub's network (which can reach huggingface.co) because agent
 # sandboxes often cannot.
 #
@@ -23,12 +23,12 @@ on:
   push:
     branches: [main]
     paths:
-      - "ai-agent/app.py"
-      - "ai-agent/storage.py"
-      - "ai-agent/tools.py"
-      - "ai-agent/requirements.txt"
-      - "ai-agent/README.md"
-      - "ai-agent/deploy.py"
+      - "app.py"
+      - "storage.py"
+      - "tools.py"
+      - "requirements.txt"
+      - "README.md"
+      - "deploy.py"
       - ".github/workflows/deploy-space.yml"
 
 jobs:
@@ -53,12 +53,12 @@ jobs:
           echo "No committed tokens found."
 
       - name: Verify app compiles
-        run: python -m py_compile ai-agent/app.py ai-agent/storage.py ai-agent/tools.py ai-agent/deploy.py
+        run: python -m py_compile app.py storage.py tools.py deploy.py
 
       - name: Upload to Space
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          python ai-agent/deploy.py \
+          python deploy.py \
             --space "${{ inputs.space || 'nezuhub/ai-agent.txt' }}" \
             ${{ (inputs.restart == false && '') || '--restart' }}
