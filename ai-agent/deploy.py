@@ -58,8 +58,19 @@ def main() -> int:
         who = api.whoami()
         print(f"Authenticated as: {who.get('name', '?')}")
     except Exception as e:  # noqa: BLE001
-        print(f"ERROR: token rejected by Hugging Face: {e}")
-        print("       Revoke it and create a fresh write token, then retry.")
+        msg = str(e)
+        network_markers = ("MaxRetryError", "SSLError", "ConnectionError", "timed out",
+                           "Name or service not known", "Temporary failure in name resolution",
+                           "SSLZeroReturnError", "EOF occurred")
+        if any(m in msg for m in network_markers):
+            print("ERROR: cannot reach huggingface.co from this machine/network.")
+            print(f"       {msg.splitlines()[0][:180]}")
+            print("       This is a network block, not a token problem — the token was")
+            print("       NOT checked. Run this script where huggingface.co is reachable")
+            print("       (your laptop, a Space, or a GitHub Actions runner).")
+            return 3
+        print(f"ERROR: token rejected by Hugging Face: {msg}")
+        print("       Revoke it, create a fresh **write** token, then retry.")
         return 2
 
     space = args.space

@@ -79,7 +79,21 @@ python ai-agent/deploy.py --space nezuhub/ai-agent.txt --restart \
 ```
 
 The script creates the Space with **ZeroGPU** hardware if it does not exist,
-uploads the files, sets the secret and restarts it.
+uploads the files, sets the secret and restarts it. It needs outbound access to
+`huggingface.co` — if the machine/network cannot reach HF it says so explicitly
+instead of blaming the token.
+
+### Deploy from GitHub instead (no local setup)
+
+`.github/workflows/deploy-space.yml` uploads `ai-agent/` to the Space from a
+GitHub runner, which can always reach `huggingface.co`:
+
+1. Repo → **Settings → Secrets and variables → Actions** → new secret
+   `HF_TOKEN` = your write token.
+2. **Actions → “Deploy AI Agent to Hugging Face Space” → Run workflow.**
+
+It also auto-deploys on pushes to `main` that touch `ai-agent/`, and refuses to
+run if a token is ever found committed in the repo.
 
 ## Environment variables
 
