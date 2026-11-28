@@ -1680,6 +1680,35 @@ if "theme" in _blocks_params:
     _BLOCKS_KW["theme"] = gr.themes.Soft()
     _BLOCKS_KW["css"] = CSS
 
+_try_import_inspect = _inspect  # already imported above
+
+
+def _supports(obj: Any, *names: str) -> bool:
+    """True when every kwarg is accepted by this Gradio version."""
+    try:
+        params = set(_inspect.signature(obj).parameters)
+    except Exception:  # pragma: no cover
+        return True
+    return all(n in params for n in names)
+
+
+# Chatbot: `type="messages"` (5.x) is the default/only mode in 6.x, and
+# `show_copy_button` was replaced by `buttons=["copy"]`.
+_CHATBOT_KW: Dict[str, Any] = {"height": 520, "label": "Chat", "elem_id": "chatbox",
+                               "allow_tags": False}
+if _supports(gr.Chatbot.__init__, "type"):
+    _CHATBOT_KW["type"] = "messages"
+if _supports(gr.Chatbot.__init__, "show_copy_button"):
+    _CHATBOT_KW["show_copy_button"] = True
+elif _supports(gr.Chatbot.__init__, "buttons"):
+    _CHATBOT_KW["buttons"] = ["copy"]
+
+# launch(): Gradio 6 wants theme/css there instead of on Blocks.
+_LAUNCH_KW: Dict[str, Any] = {}
+if not _supports(gr.Blocks.__init__, "theme"):
+    _LAUNCH_KW["theme"] = gr.themes.Soft()
+    _LAUNCH_KW["css"] = CSS
+
 with gr.Blocks(**_BLOCKS_KW) as demo:
     gr.Markdown(
         "# 🤖 AI Agent — Multi-Model Chat & Code\n"
@@ -1738,8 +1767,7 @@ with gr.Blocks(**_BLOCKS_KW) as demo:
                     )
 
                 with gr.Column(scale=3):
-                    chatbot = gr.Chatbot(type="messages", height=520, label="Chat",
-                                         elem_id="chatbox", show_copy_button=True, allow_tags=False)
+                    chatbot = gr.Chatbot(**_CHATBOT_KW)
                     msg_tb = gr.Textbox(label="Message", show_label=False, lines=2,
                                         placeholder="Ask anything — or say \"search the web for…\" / "
                                                     "\"install Qwen/Qwen2.5-1.5B-Instruct\"")
@@ -1968,6 +1996,7 @@ def main() -> None:
         share=args.share,
         show_error=True,
         prevent_thread_lock=nonblock,
+        **_LAUNCH_KW,
     )
 
 

@@ -4,7 +4,9 @@ emoji: 🤖
 colorFrom: indigo
 colorTo: purple
 sdk: gradio
-sdk_version: 5.50.0
+# sdk_version intentionally omitted: the Space installs its own Gradio (6.x).
+# Pinning here (or pinning gradio in requirements.txt) breaks the build.
+# Local dev works on both 5.x and 6.x.
 app_file: app.py
 pinned: false
 short_description: Auto-routing multi-model chat & coding agent
@@ -87,6 +89,17 @@ the *Tools* tab. Tool output is appended to the reply in a collapsible
 - 🔍 “Why this model?” panel showing the router's score breakdown
 - 📚 Model Explorer table, example prompts (incl. Hinglish), ⬇️ download the conversation
 - Live status line: backend, loaded model, free RAM, token presence, model count
+
+## Gradio 5 and 6
+
+The app runs on both Gradio **5** and **6**. Version differences (`Chatbot(type=...)`,
+`show_copy_button` → `buttons=["copy"]`, `theme`/`css` moving from `Blocks` to
+`launch()`) are detected at runtime and the correct kwargs are used.
+
+**Do not pin `gradio` in `requirements.txt` and do not set `sdk_version` in this
+file.** Spaces installs its own Gradio (6.x) in the same pip call as
+`requirements.txt`; a conflicting pin fails the build with
+`ResolutionImpossible`. The pins were removed for exactly that reason.
 
 ## Run locally
 

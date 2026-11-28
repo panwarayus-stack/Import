@@ -1,19 +1,24 @@
 # AI Agent — Multi-Model (ZeroGPU + RAM + Cloud API + Tools)
-# Hugging Face Spaces installs this on build.
-# Locally:  pip install -r requirements.txt
+#
+# IMPORTANT: do NOT pin gradio here. The Hugging Face Spaces runtime already
+# installs a specific Gradio (6.x, with OAuth/MCP extras) into the same
+# pip invocation as this file — pinning `gradio<6` makes the build fail with
+# ResolutionImpossible. The app supports Gradio 5 and 6 (see _CHATBOT_KW /
+# _LAUNCH_KW in app.py), so let the platform choose.
+#
+# Locally:  pip install -r requirements.txt    (or `pip install gradio` alone
+#           for the mock-mode UI without torch).
 
-gradio>=5.0,<6
-huggingface_hub>=0.34,<1.0
+huggingface_hub>=0.30
 transformers>=4.45,<5
 accelerate>=0.34
 sentencepiece>=0.2
-protobuf>=4.25
 psutil>=5.9
 requests>=2.31          # web search / page fetch tools
 
-# torch ships with the Spaces runtime (CUDA build). Locally use the CPU wheel:
+# torch is provided by the Spaces runtime. Locally install the CPU wheel:
 #   pip install torch --index-url https://download.pytorch.org/whl/cpu
-torch>=2.4
+torch
 
 # Optional: 4-bit / 8-bit CPU quantisation. Skipped automatically if unavailable.
 bitsandbytes>=0.43; sys_platform == "linux"
