@@ -1,0 +1,62 @@
+name: Deploy AI Agent to Hugging Face Space
+
+# Uploads ai-agent/ to the Space at huggingface.co/spaces/nezuhub/ai-agent.txt.
+# Runs on GitHub's network (which can reach huggingface.co) because agent
+# sandboxes often cannot.
+#
+# One-time setup in this GitHub repo:
+#   Settings → Secrets and variables → Actions → New repository secret
+#       HF_TOKEN = hf_...            (a **write** token; rotate it if leaked)
+# Then: Actions → "Deploy AI Agent to Hugging Face Space" → Run workflow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      space:
+        description: Target Space repo id
+        default: nezuhub/ai-agent.txt
+        required: true
+      restart:
+        description: Restart the Space after upload
+        type: boolean
+        default: true
+  push:
+    branches: [main]
+    paths:
+      - "ai-agent/app.py"
+      - "ai-agent/requirements.txt"
+      - "ai-agent/README.md"
+      - "ai-agent/deploy.py"
+      - ".github/workflows/deploy-space.yml"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install huggingface_hub
+        run: pip install "huggingface_hub>=0.27"
+
+      - name: Safety check — no token committed anywhere
+        run: |
+          if grep -rIn --exclude-dir=.git -E "hf_[A-Za-z0-9]{30,}" .; then
+            echo "::error::A Hugging Face token appears to be committed in the repo."
+            exit 1
+          fi
+          echo "No committed tokens found."
+
+      - name: Verify app compiles
+        run: python -m py_compile ai-agent/app.py ai-agent/deploy.py
+
+      - name: Upload to Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python ai-agent/deploy.py \
+            --space "${{ inputs.space || 'nezuhub/ai-agent.txt' }}" \
+            ${{ (inputs.restart == false && '') || '--restart' }}
