@@ -48,14 +48,21 @@ from __future__ import annotations
 
 import argparse
 import gc
+import json
 import logging
 import os
 import re
+import sys
 import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Generator, Iterable, List, Optional, Tuple
+
+# Local modules (ship next to this file; also uploaded to the Space).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import storage  # noqa: E402  persistent storage: chats, models, uploads
+import tools as agent_tools  # noqa: E402  web search, fetch, calc, install
 
 # ---------------------------------------------------------------- logging ---
 logging.basicConfig(
@@ -76,6 +83,8 @@ PRELOAD_MODEL = os.getenv("PRELOAD_MODEL", "").strip()
 AUTO_PRELOAD = os.getenv("AUTO_PRELOAD", "1").strip().lower() in ("1", "true", "yes", "on")
 PREFER_API = os.getenv("PREFER_API", "").strip().lower() in ("1", "true", "yes", "on")
 ZEROGPU_DURATION = int(os.getenv("ZEROGPU_DURATION", "120"))
+WEB_TOOLS = os.getenv("WEB_TOOLS", "1").strip().lower() in ("1", "true", "yes", "on")
+MAX_TOOL_ROUNDS = int(os.getenv("MAX_TOOL_ROUNDS", "3"))
 
 # ------------------------------------------------------- optional imports ---
 # ZeroGPU: `gradio.spaces` only exists on HF Spaces / recent Gradio.
@@ -325,6 +334,66 @@ _add(ModelInfo(
 ))
 
 UNIVERSAL_ID = "universal"
+
+
+# ------------------------------------------------- local (downloaded) models --
+def refresh_local_models() -> int:
+    """Expose /data/models snapshots in the model dropdown.
+
+    Each installed model becomes ``local/<name>`` in MODEL_REGISTRY so it can be
+    selected, loaded and routed like any built-in model. Idempotent.
+    """
+    added = 0
+    try:
+        items = storage.installed_models("model")
+    except Exception as e:  # noqa: BLE001
+        log.warning("could not read installed models: %s", e)
+        return 0
+    for it in items:
+        if it.get("status") != "ready":
+            continue
+        mid, path = it.get("id", ""), it.get("path", "")
+        if not mid or not path or not os.path.isdir(path):
+            continue
+        if mid in MODEL_REGISTRY:
+            continue
+        name = it.get("source", mid).split("/")[-1]
+        MODEL_REGISTRY[mid] = ModelInfo(
+            id=mid,
+            label=f"{name} — local ({storage.human_bytes(it.get('size_bytes', 0))})",
+            category="chat",
+            params="?",
+            ram_gb=round(max(0.5, it.get("size_bytes", 0) / 1e9), 1),
+            zerogpu=True,
+            gated=False,
+            description=f"Downloaded from {it.get('source')} into {path}",
+            best_for="Locally installed model",
+            system_prompt=CHAT_SYS,
+            emoji="📦",
+        )
+        added += 1
+    if added:
+        log.info("registered %s locally installed model(s)", added)
+    return added
+
+
+def local_model_choices() -> List[Tuple[str, str]]:
+    return [(f"{m.emoji} {m.label}", m.id)
+            for m in MODEL_REGISTRY.values() if m.id.startswith("local/")]
+
+
+def all_model_choices() -> List[Tuple[str, str]]:
+    base = [("🧭 Universal — Auto-Route to the best model (recommended)", UNIVERSAL_ID)]
+    base += [(f"{m.emoji} {m.label}", m.id) for m in MODEL_REGISTRY.values()
+             if not m.id.startswith("local/")]
+    base += local_model_choices()
+    return base
+
+
+try:
+    refresh_local_models()
+except Exception as _e:  # noqa: BLE001
+    log.warning("local model scan failed: %s", _e)
 
 # Best model per category (local weights). Used by the router.
 ROUTER_DEFAULTS: Dict[str, str] = {
@@ -1081,6 +1150,9 @@ def _resolve(model_choice: str, message: str) -> Tuple[str, str, str, str]:
     info = MODEL_REGISTRY.get(model_choice)
     category = info.category if info else "chat"
     backend = available_backend(model_choice)
+    if info is None:  # unknown/removed model → fall back to the router
+        chosen, category, backend, routing_md = _resolve(UNIVERSAL_ID, message)
+        return chosen, category, backend, routing_md + f"\n\n_(selected model `{model_choice}` is gone; auto-routed)_"
     md = (
         f"**Selected →** `{model_choice}`  \n"
         f"**Task:** {category} &nbsp;·&nbsp; **Backend:** {_backend_label(backend)}"
@@ -1109,6 +1181,92 @@ def _compose_messages(history: List[Dict[str, str]], message: str, system_prompt
     return messages
 
 
+# ----------------------------------------------------------- tool helpers ---
+def _tool_block(results: List[Tuple[str, agent_tools.ToolResult]]) -> str:
+    """Render tool output as a collapsible markdown appendix."""
+    if not results:
+        return ""
+    parts = ["\n\n<details><summary>🔧 Tools used</summary>\n"]
+    for name, res in results:
+        icon = "✅" if res.ok else "⚠️"
+        body = res.text if len(res.text) <= 4000 else res.text[:4000] + "\n…"
+        parts.append(f"\n**{icon} {name}**\n\n{body}\n")
+    parts.append("\n</details>\n")
+    return "".join(parts)
+
+
+def _run_ui_tools(message: str, enabled: bool) -> List[Tuple[str, agent_tools.ToolResult]]:
+    """Run the tools the UI decides are relevant for this message."""
+    results: List[Tuple[str, agent_tools.ToolResult]] = []
+    if not enabled or not WEB_TOOLS:
+        return results
+    try:
+        planned = agent_tools.auto_tools_for(message, True)
+    except Exception:
+        planned = []
+    # "install x/y" is handled deterministically, not by guessing with a model.
+    if "install" in planned:
+        source = agent_tools.extract_hf_source(message)
+        if source:
+            results.append(("install_model", agent_tools.install_model(source)))
+        else:
+            results.append(("install_model", agent_tools.ToolResult(
+                False, "📦 Tell me the model id, e.g. `Qwen/Qwen2.5-1.5B-Instruct` "
+                       "or `datasets/open-r1/OpenR1-Math`.")))
+    if "web" in planned:
+        results.append(("web_search", agent_tools.web_search(message[:200])))
+    if "fetch" in planned:
+        m = re.search(r"https?://[^\s)>\"]+", message)
+        if m:
+            results.append(("fetch_page", agent_tools.fetch_page(m.group(0))))
+    if "calc" in planned:
+        m = re.search(r"[-+*/^%().\d\s]{3,}", message)
+        if m:
+            results.append(("calculator", agent_tools.calculator(m.group(0))))
+    if "time" in planned:
+        results.append(("current_time", agent_tools.current_time()))
+    return results
+
+
+def _messages_with_tools(messages: List[Dict[str, str]],
+                         results: List[Tuple[str, agent_tools.ToolResult]]) -> List[Dict[str, str]]:
+    """Add tool observations + instructions to the last user turn."""
+    if not results:
+        return messages
+    out = [dict(m) for m in messages]
+    observations = "\n\n".join(
+        f"### {name} result\n{res.text}" for name, res in results
+    )
+    last = out[-1]
+    last["content"] = (
+        f"{last['content']}\n\n---\nLive tool output (use it, cite URLs):\n{observations}\n---\n"
+        "Answer the user using the tool output above where relevant. "
+        "Do not mention JSON or the tool protocol."
+    )
+    return out
+
+
+def _save_turn(ip: Optional[str], chat_id: Optional[str], messages: List[Dict[str, str]],
+               model: str, tag: str = "") -> Optional[str]:
+    """Persist the transcript for this IP; returns the chat id."""
+    try:
+        cid = chat_id or storage.new_chat_id()
+        storage.save_chat(ip, cid, messages, model=model,
+                          extra={"tag": tag} if tag else None)
+        return cid
+    except Exception as e:  # noqa: BLE001
+        log.warning("could not save chat: %s", e)
+        return chat_id
+
+
+def _saved_line(ip: Optional[str], chat_id: str) -> str:
+    """'saved' indicator shown under the chat."""
+    if not chat_id:
+        return ""
+    where = storage.CHATS / storage.ip_key(ip) / f"{chat_id}.json"
+    return f"💾 Saved automatically → `{where}`"
+
+
 def chat_fn(
     message: str,
     history: List[Dict[str, str]],
@@ -1118,61 +1276,89 @@ def chat_fn(
     top_p: float,
     max_tokens: int,
     attachment: Optional[str] = None,
+    use_tools: bool = True,
+    chat_id: str = "",
+    request: gr.Request = None,
 ):
-    """Streaming chat handler → (history, status, routing_md)."""
+    """Streaming chat handler → (history, status, routing_md, chat_id, info_md)."""
     message = (message or "").strip()
     history = _clean_history(history)
+    ip = storage.request_ip(request) if request is not None else None
     if not message and not attachment:
-        yield history, "Type a message first.", ""
+        yield history, "Type a message first.", "", chat_id, ""
         return
+    # One id per conversation, created before the first token so every streamed
+    # frame can show where the transcript is being persisted.
+    chat_id = (chat_id or "").strip() or storage.new_chat_id()
+    saved = _saved_line(ip, chat_id)
 
     chosen, category, backend, routing_md = _resolve(model_choice, message or "summarise this file")
     info = MODEL_REGISTRY.get(chosen)
-    attach_text = _read_upload(attachment) if attachment else ""
+    attach_text = ""
+    if attachment:
+        attach_text = _read_upload(attachment)
+        if ip:
+            try:  # keep the file alongside the chat for later turns
+                with open(attachment, "rb") as f:
+                    storage.save_upload(ip, os.path.basename(attachment), f.read())
+            except Exception:
+                pass
     messages = _compose_messages(history, message, system_prompt, info, attach_text)
 
-    yield history, f"🧭 Using {chosen} ({_backend_label(backend)})…", routing_md
+    user_msg = {"role": "user", "content": message or "(attachment)"}
+    yield history, f"🧭 Using {chosen} ({_backend_label(backend)})…", routing_md, chat_id, saved
+
+    # ---------------- tools (before the model speaks) ----------------
+    tool_results: List[Tuple[str, agent_tools.ToolResult]] = []
+    if use_tools:
+        yield (history + [user_msg, {"role": "assistant", "content": "🔧 Running tools…"}],
+               "🔧 Running tools…", routing_md, chat_id, saved)
+        tool_results = _run_ui_tools(message, use_tools)
+        messages = _messages_with_tools(messages, tool_results)
+        if tool_results:
+            names = ", ".join(n for n, _ in tool_results)
+            routing_md += f"\n\n🔧 **Tools:** {names}"
+    tool_md = _tool_block(tool_results)
+    model_messages = messages + [{"role": "user",
+                                 "content": "Write your final answer to the user now in plain markdown. "
+                                            "Do not emit JSON or tool calls."}] if tool_results else messages
+
+    def _emit(full: str) -> List[Dict[str, str]]:
+        return history + [user_msg, {"role": "assistant", "content": full + tool_md}]
 
     # ---------------- mock ----------------
     if backend == "mock":
         full = ""
         for chunk in mock_reply(message, category, chosen):
             full += chunk
-            yield history + [
-                {"role": "user", "content": message or "(attachment)"},
-                {"role": "assistant", "content": full},
-            ], "🟡 MOCK streaming…", routing_md
-        yield history + [
-            {"role": "user", "content": message or "(attachment)"},
-            {"role": "assistant", "content": full},
-        ], "🟡 MOCK reply — set HF_TOKEN or install torch for real models.", routing_md
+            yield _emit(full), "🟡 MOCK streaming…", routing_md, chat_id, saved
+        _save_turn(ip, chat_id, history + [user_msg,
+                   {"role": "assistant", "content": full + tool_md}], chosen)
+        yield (_emit(full),
+               "🟡 MOCK reply — set HF_TOKEN or install torch for real models.",
+               routing_md, chat_id, saved)
         return
 
     # ---------------- cloud API ----------------
     if backend == "api":
-        full = ""
-        err_text = ""
+        full, err_text = "", ""
         try:
-            for chunk in api_stream(chosen, messages, max_tokens, temperature, top_p):
+            for chunk in api_stream(chosen, model_messages, max_tokens, temperature, top_p):
                 if chunk.startswith("⚠️"):
                     err_text = chunk
                     break
                 full = chunk
-                yield history + [
-                    {"role": "user", "content": message},
-                    {"role": "assistant", "content": full},
-                ], f"☁️ Streaming from {chosen}…", routing_md
+                yield _emit(full), f"☁️ Streaming from {chosen}…", routing_md, chat_id, saved
         except Exception as e:  # noqa: BLE001
             err_text = f"⚠️ Cloud API error: {e}"
         if err_text and not full:
-            yield history, err_text, routing_md
+            yield history, err_text, routing_md, chat_id, saved
             return
         if err_text:
             full += "\n\n" + err_text
-        yield history + [
-            {"role": "user", "content": message},
-            {"role": "assistant", "content": full},
-        ], "✅ Done (cloud API).", routing_md
+        _save_turn(ip, chat_id, history + [user_msg,
+                   {"role": "assistant", "content": full + tool_md}], chosen)
+        yield (_emit(full), "✅ Done (cloud API).", routing_md, chat_id, saved)
         return
 
     # ---------------- local (ZeroGPU or RAM) ----------------
@@ -1180,73 +1366,59 @@ def chat_fn(
     full = ""
     started = time.time()
     try:
-        for chunk in _local_stream(chosen, messages, max_tokens, temperature, top_p, want_gpu):
+        for chunk in _local_stream(chosen, model_messages, max_tokens, temperature, top_p, want_gpu):
             full = chunk
-            yield history + [
-                {"role": "user", "content": message},
-                {"role": "assistant", "content": full},
-            ], "✍️ Generating…", routing_md
+            yield _emit(full), "✍️ Generating…", routing_md, chat_id, saved
     except Exception as e:  # noqa: BLE001
         err = str(e)
         log.warning("Local generation failed (%s) — trying cloud fallback", err)
-        # Transparent fallback: if we have a token, answer anyway.
         if CAN_API:
             fallback = ROUTER_API_DEFAULTS.get(category, "Qwen/Qwen2.5-72B-Instruct")
-            routing_md += f"\n\n⚠️ Local model failed ({err.splitlines()[0][:160]}). Falling back to ☁️ `{fallback}`."
+            routing_md += (f"\n\n⚠️ Local model failed ({err.splitlines()[0][:160]}). "
+                           f"Falling back to ☁️ `{fallback}`.")
             try:
-                for chunk in api_stream(fallback, messages, max_tokens, temperature, top_p):
+                for chunk in api_stream(fallback, model_messages, max_tokens, temperature, top_p):
                     if chunk.startswith("⚠️"):
                         full = (full + "\n\n" + chunk).strip()
                         break
                     full = chunk
-                    yield history + [
-                        {"role": "user", "content": message},
-                        {"role": "assistant", "content": full},
-                    ], f"☁️ Cloud fallback: {fallback}", routing_md
-                yield history + [
-                    {"role": "user", "content": message},
-                    {"role": "assistant", "content": full or "⚠️ No reply."},
-                ], "✅ Done (cloud fallback).", routing_md
+                    yield _emit(full), f"☁️ Cloud fallback: {fallback}", routing_md, chat_id, saved
+                _save_turn(ip, chat_id, history + [user_msg,
+                           {"role": "assistant", "content": (full or "⚠️ No reply.") + tool_md}], fallback)
+                yield (_emit(full or "⚠️ No reply."), "✅ Done (cloud fallback).",
+                       routing_md, chat_id, saved)
                 return
             except Exception as e2:  # noqa: BLE001
                 full = full or f"⚠️ {err}"
                 err = f"{err} | fallback failed: {e2}"
-        yield history + [
-            {"role": "user", "content": message},
-            {"role": "assistant", "content": full or f"⚠️ {err}"},
-        ], f"❌ {err.splitlines()[0][:200]}", routing_md
+        final = full or f"⚠️ {err}"
+        _save_turn(ip, chat_id, history + [user_msg,
+                   {"role": "assistant", "content": final + tool_md}], chosen)
+        yield (_emit(final), f"❌ {err.splitlines()[0][:200]}", routing_md, chat_id, saved)
         return
 
     elapsed = max(1e-6, time.time() - started)
     tok_s = MANAGER.last_tok_s or (len(full) / 4) / elapsed
     status = f"✅ Done in {elapsed:.1f}s · ~{tok_s:.0f} tok/s · {_backend_label('local')}"
-    yield history + [
-        {"role": "user", "content": message},
-        {"role": "assistant", "content": full},
-    ], status, routing_md
+    _save_turn(ip, chat_id, history + [user_msg,
+               {"role": "assistant", "content": full + tool_md}], chosen)
+    yield (_emit(full), status, routing_md, chat_id, saved)
 
 
-def regenerate_fn(history, model_choice, system_prompt, temperature, top_p, max_tokens):
+def regenerate_fn(history, model_choice, system_prompt, temperature, top_p, max_tokens,
+                  use_tools=True):
     """Re-run the last user turn (drops the previous assistant reply)."""
     clean = _clean_history(history)
-    last_user = ""
-    trimmed: List[Dict[str, str]] = []
-    for msg in clean:
-        if msg["role"] == "user":
-            last_user = msg["content"]
-            trimmed = []
-        else:
-            trimmed.append(msg)
-    if not last_user:
-        yield clean, "Nothing to regenerate.", ""
-        return
-    # History before the last user message
     idx = len(clean) - 1
     while idx >= 0 and clean[idx]["role"] != "user":
         idx -= 1
-    prior = clean[:idx] if idx >= 0 else []
+    if idx < 0:
+        yield clean, "Nothing to regenerate.", "", "", ""
+        return
+    last_user = clean[idx]["content"]
+    prior = clean[:idx]
     yield from chat_fn(last_user, prior, model_choice, system_prompt,
-                       temperature, top_p, max_tokens, None)
+                       temperature, top_p, max_tokens, None, use_tools, "", None)
 
 
 def load_model_btn(model_choice: str):
@@ -1316,10 +1488,158 @@ def routing_breakdown(message: str) -> str:
     )
 
 
+# ------------------------------------------------------ chat history (IP) ---
+def _ip_of(request: Optional[gr.Request]) -> Optional[str]:
+    return storage.request_ip(request) if request is not None else None
+
+
+def chats_table(request: gr.Request = None) -> List[List[str]]:
+    """Rows for the 'Saved chats' dataframe (this IP only)."""
+    ip = _ip_of(request)
+    rows: List[List[str]] = []
+    for c in storage.list_chats(ip):
+        rows.append([
+            str(c.get("id", "")),
+            str(c.get("title", ""))[:70],
+            time.strftime("%Y-%m-%d %H:%M", time.localtime(c.get("updated", 0))),
+            str(c.get("turns", 0)),
+            str(c.get("model", ""))[:40],
+        ])
+    return rows
+
+
+def open_chat(chat_id: str, request: gr.Request = None):
+    """Load a saved transcript into the chatbot."""
+    ip = _ip_of(request)
+    rec = storage.load_chat(ip, (chat_id or "").strip())
+    if not rec:
+        return [], "", chat_id or "", f"⚠️ No chat `{chat_id}` for this IP."
+    msgs = rec.get("messages", [])
+    return msgs, "", rec["id"], f"📂 Loaded **{rec.get('title', '')}** ({len(msgs)} messages)"
+
+
+def new_chat() -> Tuple[list, str, str, str]:
+    cid = storage.new_chat_id()
+    return [], "", cid, f"🆕 New chat `{cid}` — it saves automatically as you talk."
+
+
+def delete_saved_chat(chat_id: str, request: gr.Request = None):
+    ip = _ip_of(request)
+    ok = storage.delete_chat(ip, (chat_id or "").strip())
+    return chats_table(request), (f"🗑️ Deleted `{chat_id}`" if ok else f"⚠️ Not found: `{chat_id}`")
+
+
+def rename_saved_chat(chat_id: str, title: str, request: gr.Request = None):
+    ip = _ip_of(request)
+    ok = storage.rename_chat(ip, (chat_id or "").strip(), (title or "").strip() or "Untitled")
+    return chats_table(request), ("✏️ Renamed." if ok else "⚠️ Chat not found.")
+
+
+def storage_status(request: gr.Request = None) -> str:
+    ip = _ip_of(request)
+    n = storage.chat_count(ip)
+    return (
+        f"💾 **Storage:** {storage.storage_summary()}\n\n"
+        f"👤 **This IP** (`{storage.ip_key(ip)}`): {n} saved chat(s)"
+    )
+
+
+# ------------------------------------------------------- models manager -----
+def models_table() -> List[List[str]]:
+    rows = []
+    for it in storage.installed_models():
+        rows.append([
+            str(it.get("id", "")),
+            str(it.get("kind", "")),
+            str(it.get("source", "")),
+            storage.human_bytes(it.get("size_bytes", 0)),
+            str(it.get("files", 0)),
+            time.strftime("%Y-%m-%d %H:%M", time.localtime(it.get("installed", 0))),
+            str(it.get("status", "")),
+        ])
+    return rows
+
+
+def install_model_ui(source: str) -> Tuple[List[List[str]], str]:
+    source = (source or "").strip()
+    if not source:
+        return models_table(), "⚠️ Paste a model id or URL first."
+    try:
+        parsed = storage.parse_source(source)
+    except Exception as e:  # noqa: BLE001
+        return models_table(), f"❌ {e}"
+    job = storage.install_async(source)
+    if job.status == "ready":
+        refresh_local_models()
+        return models_table(), f"📦 **Already installed** — {job.progress}\n\nUpdated dropdown list."
+    if job.status == "failed":
+        return models_table(), f"❌ Could not start: {job.error}"
+    return (
+        models_table(),
+        f"📦 **Started** downloading `{parsed['repo_id']}` ({parsed['kind']}) in the background.\n\n"
+        f"Job `{job.job_id}` → target `{storage.MODELS}`. Press **Refresh** to watch progress; "
+        f"the model appears in the dropdown once ready.",
+    )
+
+
+def refresh_models_ui() -> Tuple[List[List[str]], str, Any]:
+    """Update the table, the status line and the model dropdown choices."""
+    added = refresh_local_models()
+    jobs = storage.jobs_snapshot()
+    active = [j for j in jobs if j.get("status") in ("pending", "downloading")]
+    lines = []
+    if active:
+        lines.append("⏳ **Downloading now:**")
+        for j in active[:5]:
+            lines.append(f"- `{j.get('source')}` — {j.get('progress') or j.get('status')}")
+    failed = [j for j in jobs if j.get("status") == "failed"]
+    if failed:
+        lines.append("\n❌ **Failed:**")
+        for j in failed[-3:]:
+            lines.append(f"- `{j.get('source')}` — {str(j.get('error'))[:160]}")
+    if added:
+        lines.append(f"\n✅ {added} new local model(s) registered.")
+    lines.append(f"\n{storage.storage_summary()}")
+    return models_table(), "\n".join(lines), gr.update(choices=all_model_choices())
+
+
+def delete_model_ui(model_id: str) -> Tuple[List[List[str]], str, Any]:
+    model_id = (model_id or "").strip()
+    if not model_id:
+        return models_table(), "⚠️ Select a model id.", gr.update()
+    rec = storage.get_installed(model_id)
+    if not rec:
+        return models_table(), f"⚠️ Not installed: `{model_id}`", gr.update()
+    MANAGER.unload()
+    MODEL_REGISTRY.pop(rec["id"], None)
+    ok = storage.remove_installed(model_id, delete_files=True)
+    return (models_table(),
+            (f"🗑️ Removed `{model_id}` and its files." if ok else f"⚠️ Could not remove `{model_id}`."),
+            gr.update(choices=all_model_choices()))
+
+
+def tool_button(tool: str, arg: str) -> str:
+    """Direct tool invocation from the Tools tab."""
+    arg = (arg or "").strip()
+    if tool == "web_search":
+        return agent_tools.web_search(arg or "today's technology news").text
+    if tool == "fetch_page":
+        return agent_tools.fetch_page(arg).text if arg else "⚠️ Give a URL."
+    if tool == "calculator":
+        return agent_tools.calculator(arg).text if arg else "⚠️ Give an expression."
+    if tool == "current_time":
+        return agent_tools.current_time(arg or "UTC").text
+    if tool == "dataset_overview":
+        return agent_tools.dataset_overview(arg).text if arg else "⚠️ Give a repo id."
+    if tool == "list_installed":
+        return agent_tools.list_installed_tool().text
+    if tool == "install_model":
+        return agent_tools.install_model(arg).text if arg else "⚠️ Give a repo id."
+    return f"⚠️ Unknown tool: {tool}"
+
+
 # -------------------------------------------------------------------- UI ----
-MODEL_CHOICES: List[Tuple[str, str]] = [
-    ("🧭 Universal — Auto-Route to the best model (recommended)", UNIVERSAL_ID)
-] + [(f"{m.emoji} {m.label}", m.id) for m in MODEL_REGISTRY.values()]
+MODEL_CHOICES: List[Tuple[str, str]] = all_model_choices()
 
 SYSTEM_PRESETS = {
     "Default (model's own)": "",
@@ -1335,8 +1655,8 @@ EXAMPLES = [
     ["Write a Python function to check if a string is a palindrome, with tests.", UNIVERSAL_ID],
     ["Debug this error: TypeError: 'NoneType' object is not subscriptable in Python.", UNIVERSAL_ID],
     ["Solve: a train travels 60 km/h for 2.5 hours — how far? Show the steps.", UNIVERSAL_ID],
-    ["Write a short professional email asking for a deadline extension.", UNIVERSAL_ID],
-    ["Summarise the causes of World War I in bullet points.", UNIVERSAL_ID],
+    ["Search the web for the latest Qwen model release and summarise it.", UNIVERSAL_ID],
+    ["Install Qwen/Qwen2.5-1.5B-Instruct for me so I can chat with it offline.", UNIVERSAL_ID],
     ["Mera code work nahi kar raha, Python list index error aa raha hai. Fix karo.", UNIVERSAL_ID],
 ]
 
@@ -1364,118 +1684,230 @@ with gr.Blocks(**_BLOCKS_KW) as demo:
     gr.Markdown(
         "# 🤖 AI Agent — Multi-Model Chat & Code\n"
         '<span class="badge">🧭 Universal Auto-Route</span> '
-        '<span class="badge">⚡ ZeroGPU (free HF Spaces)</span> '
-        '<span class="badge">💾 RAM / CPU fallback</span> '
-        '<span class="badge">☁️ Cloud API fallback</span> '
-        '<span class="badge">💻 Top code models</span> '
-        '<span class="badge">💬 Top chat models</span>\n\n'
-        "Leave the model on **Universal** and each query is routed to the best model: "
-        "code → coder, maths → reasoning, chat → chat, huge tasks → cloud API. "
-        "One model lives in memory at a time; switching frees the old one first."
+        '<span class="badge">⚡ ZeroGPU</span> '
+        '<span class="badge">💾 RAM / CPU</span> '
+        '<span class="badge">☁️ Cloud API</span> '
+        '<span class="badge">🌐 Web search</span> '
+        '<span class="badge">🧮 Calculator</span> '
+        '<span class="badge">📦 Install models</span> '
+        '<span class="badge">🗂️ Chats saved per IP</span>\n\n'
+        "Chats are stored in the persistent bucket and survive restarts. "
+        "Models and datasets are downloaded into the same bucket and appear in the model list. "
+        f"Storage: `{storage.DATA_ROOT}`"
     )
 
-    with gr.Row():
-        # ---------------- left: controls ----------------
-        with gr.Column(scale=1, min_width=280):
-            model_dd = gr.Dropdown(
-                choices=MODEL_CHOICES, value=UNIVERSAL_ID, label="Model",
-                info="Universal auto-routes every query.",
-            )
-            preset_dd = gr.Dropdown(list(SYSTEM_PRESETS), value="Default (model's own)",
-                                    label="System prompt preset")
-            system_tb = gr.Textbox(label="System prompt", lines=3,
-                                   placeholder="Leave blank for the model's default…")
-            temperature = gr.Slider(0.0, 1.5, value=0.7, step=0.05, label="Temperature")
-            top_p = gr.Slider(0.1, 1.0, value=0.9, step=0.05, label="Top-p")
-            max_tokens = gr.Slider(64, 2048, value=512, step=64, label="Max new tokens")
+    # hidden state: which saved chat we are continuing
+    chat_id_state = gr.State("")
+
+    with gr.Tabs():
+        # ================================================ CHAT ================
+        with gr.Tab("💬 Chat"):
             with gr.Row():
-                load_btn = gr.Button("⬇️ Load", variant="secondary")
-                unload_b = gr.Button("🗑️ Unload", variant="secondary")
-            status_md = gr.Markdown(status_text())
-            with gr.Accordion("🔍 Why this model? (router scores)", open=False):
-                probe_tb = gr.Textbox(label="Preview routing for…", lines=2,
-                                      placeholder="Paste a query to see how it would be routed")
-                probe_btn = gr.Button("Explain routing")
-                probe_md = gr.Markdown("")
-            routing_md = gr.Markdown("")
+                with gr.Column(scale=1, min_width=290):
+                    model_dd = gr.Dropdown(
+                        choices=MODEL_CHOICES, value=UNIVERSAL_ID, label="Model",
+                        info="Universal auto-routes every query. 📦 = installed locally.",
+                    )
+                    preset_dd = gr.Dropdown(list(SYSTEM_PRESETS), value="Default (model's own)",
+                                            label="System prompt preset")
+                    system_tb = gr.Textbox(label="System prompt", lines=3,
+                                           placeholder="Leave blank for the model's default…")
+                    temperature = gr.Slider(0.0, 1.5, value=0.7, step=0.05, label="Temperature")
+                    top_p = gr.Slider(0.1, 1.0, value=0.9, step=0.05, label="Top-p")
+                    max_tokens = gr.Slider(64, 2048, value=512, step=64, label="Max new tokens")
+                    use_tools = gr.Checkbox(
+                        value=True, label="🔧 Use tools",
+                        info="Web search · page fetch · calculator · time · install models",
+                    )
+                    with gr.Row():
+                        load_btn = gr.Button("⬇️ Load", variant="secondary")
+                        unload_b = gr.Button("🗑️ Unload", variant="secondary")
+                    status_md = gr.Markdown(status_text())
+                    with gr.Accordion("🔍 Why this model? (router scores)", open=False):
+                        probe_tb = gr.Textbox(label="Preview routing for…", lines=2,
+                                              placeholder="Paste a query to see how it would be routed")
+                        probe_btn = gr.Button("Explain routing")
+                        probe_md = gr.Markdown("")
+                    routing_md = gr.Markdown("")
+                    gr.Markdown(
+                        "**Memory rules**\n"
+                        "- Only **one** model is resident at a time.\n"
+                        "- **ZeroGPU:** GPU allocated per request by `@spaces.GPU`.\n"
+                        "- **Local CPU:** auto 4-bit quantisation; 0.5B/1.5B fit a 4GB box.\n"
+                        "- **Cloud API:** 72B/70B/480B models need only `HF_TOKEN`."
+                    )
+
+                with gr.Column(scale=3):
+                    chatbot = gr.Chatbot(type="messages", height=520, label="Chat",
+                                         elem_id="chatbox", show_copy_button=True, allow_tags=False)
+                    msg_tb = gr.Textbox(label="Message", show_label=False, lines=2,
+                                        placeholder="Ask anything — or say \"search the web for…\" / "
+                                                    "\"install Qwen/Qwen2.5-1.5B-Instruct\"")
+                    with gr.Row():
+                        send_btn = gr.Button("Send ➤", variant="primary", scale=2)
+                        stop_btn = gr.Button("⏹ Stop", variant="stop", scale=1)
+                        regen_btn = gr.Button("🔄 Regenerate", scale=1)
+                        clear_btn = gr.Button("🧹 New chat", scale=1)
+                    saved_md = gr.Markdown("")
+                    with gr.Accordion("📎 Attach a file (optional context)", open=False):
+                        file_in = gr.File(label="Text / code file", file_count="single",
+                                          file_types=[".txt", ".md", ".py", ".js", ".ts", ".json",
+                                                      ".csv", ".html", ".css", ".sql", ".yaml", ".log"])
+                    with gr.Row():
+                        download_btn = gr.DownloadButton("⬇️ Download chat", variant="secondary")
+                    gr.Examples(examples=EXAMPLES, inputs=[msg_tb, model_dd], label="Try an example")
+
+        # ============================================ SAVED CHATS =============
+        with gr.Tab("🗂️ Chats"):
             gr.Markdown(
-                "**Memory rules**\n"
-                "- Only **one** model is resident at a time.\n"
-                "- **ZeroGPU:** GPU allocated per request by `@spaces.GPU` — nothing to buy.\n"
-                "- **Local CPU:** auto 4-bit quantisation; 0.5B/1.5B fit a 4GB box.\n"
-                "- **Cloud API:** 72B/70B/480B models need only `HF_TOKEN`."
+                "Conversations are saved to the persistent bucket **per client IP** "
+                "(`/data/chats/<hashed-ip>/`) and survive Space restarts and rebuilds. "
+                "Other visitors' chats are never listed here."
+            )
+            chats_status_md = gr.Markdown("")
+            with gr.Row():
+                refresh_chats_btn = gr.Button("🔄 Refresh list", variant="secondary")
+                new_chat_btn = gr.Button("🆕 New chat", variant="primary")
+            chats_df = gr.Dataframe(
+                headers=["id", "title", "updated", "turns", "model"],
+                value=[], interactive=False, wrap=True, label="Your saved chats",
+            )
+            with gr.Row():
+                open_id_tb = gr.Textbox(label="Chat id", placeholder="paste an id from the table")
+                open_btn = gr.Button("📂 Open")
+                del_btn = gr.Button("🗑️ Delete", variant="stop")
+            with gr.Row():
+                rename_id_tb = gr.Textbox(label="Chat id to rename")
+                rename_title_tb = gr.Textbox(label="New title")
+                rename_btn = gr.Button("✏️ Rename")
+
+        # ================================================ MODELS ==============
+        with gr.Tab("📦 Models"):
+            gr.Markdown(
+                f"Download any Hugging Face **model** or **dataset** into the persistent bucket "
+                f"(`{storage.MODELS}`). Installed models show up in the Chat model list as 📦 and "
+                f"can be loaded like built-ins. You can also just ask the assistant: "
+                f"*\"install Qwen/Qwen2.5-1.5B-Instruct\"*."
+            )
+            with gr.Row():
+                install_tb = gr.Textbox(
+                    label="Model / dataset id or URL", scale=4,
+                    placeholder="Qwen/Qwen2.5-Coder-7B-Instruct · datasets/open-r1/OpenR1-Math · "
+                                "https://huggingface.co/owner/name",
+                )
+                install_btn = gr.Button("⬇️ Install", variant="primary", scale=1)
+            with gr.Row():
+                refresh_models_btn = gr.Button("🔄 Refresh / progress")
+                delete_model_tb = gr.Textbox(label="Model id to delete", scale=3,
+                                             placeholder="local/qwen-qwen2.5-1.5b-instruct")
+                delete_model_btn = gr.Button("🗑️ Delete", variant="stop", scale=1)
+            models_md = gr.Markdown(storage.storage_summary())
+            models_df = gr.Dataframe(
+                headers=["id", "kind", "source", "size", "files", "installed", "status"],
+                value=models_table(), interactive=False, wrap=True, label="Installed",
             )
 
-        # ---------------- right: chat ----------------
-        with gr.Column(scale=3):
-            chatbot = gr.Chatbot(type="messages", height=520, label="Chat", elem_id="chatbox",
-                                 show_copy_button=True, allow_tags=False)
-            msg_tb = gr.Textbox(label="Message", show_label=False, lines=2,
-                                placeholder="Ask anything — code, chat, maths, writing… "
-                                            "(Universal routes it)")
+        # ================================================= TOOLS ==============
+        with gr.Tab("🌐 Tools"):
+            gr.Markdown(
+                "Every tool below is also available to the model during chat when "
+                "**🔧 Use tools** is on. The AI can call them itself — including installing models."
+            )
             with gr.Row():
-                send_btn = gr.Button("Send ➤", variant="primary", scale=2)
-                stop_btn = gr.Button("⏹ Stop", variant="stop", scale=1)
-                regen_btn = gr.Button("🔄 Regenerate", scale=1)
-                clear_btn = gr.Button("🧹 Clear", scale=1)
-            with gr.Accordion("📎 Attach a file (optional context)", open=False):
-                file_in = gr.File(label="Text / code file", file_count="single",
-                                  file_types=[".txt", ".md", ".py", ".js", ".ts", ".json",
-                                              ".csv", ".html", ".css", ".sql", ".yaml", ".log"])
-            with gr.Row():
-                download_btn = gr.DownloadButton("⬇️ Download chat", variant="secondary")
-            gr.Examples(examples=EXAMPLES, inputs=[msg_tb, model_dd], label="Try an example")
+                tool_pick = gr.Dropdown(
+                    ["web_search", "fetch_page", "calculator", "current_time",
+                     "dataset_overview", "list_installed", "install_model"],
+                    value="web_search", label="Tool",
+                )
+                tool_arg = gr.Textbox(label="Argument", scale=2,
+                                      placeholder="query · URL · expression · repo id")
+                tool_run = gr.Button("▶️ Run", variant="primary")
+            tool_out = gr.Markdown("")
 
-    # ---------------- model explorer ----------------
-    with gr.Accordion("📚 Model Explorer — every model, memory, ZeroGPU & API support", open=False):
-        rows = [
-            [f"{m.emoji} {m.id}", m.category, m.params,
-             "☁️ API" if m.api else _human_gb(m.ram_gb),
-             "✅" if m.api else ("☁️ API" if not m.zerogpu else "✅"),
-             "🔒 gated" if m.gated else "open", m.best_for]
-            for m in MODEL_REGISTRY.values()
-        ]
-        gr.Dataframe(
-            headers=["Model", "Category", "Params", "RAM/VRAM", "ZeroGPU", "Access", "Best for"],
-            value=rows, interactive=False, wrap=True,
-        )
-        gr.Markdown(
-            "**Routing** scores your query for code / reasoning / creative / translation / "
-            "summary signals — English **and** Hinglish — in under a millisecond, with no extra "
-            "model call. Hard tasks are upgraded to the cloud API when a token is available, and "
-            "downgraded to a RAM-safe model when memory is low."
-        )
+            with gr.Accordion("📚 Model Explorer — every built-in model", open=False):
+                rows = [
+                    [f"{m.emoji} {m.id}", m.category, m.params,
+                     "☁️ API" if m.api else _human_gb(m.ram_gb),
+                     "✅" if m.api else ("☁️ API" if not m.zerogpu else "✅"),
+                     "🔒 gated" if m.gated else "open", m.best_for]
+                    for m in MODEL_REGISTRY.values()
+                ]
+                gr.Dataframe(
+                    headers=["Model", "Category", "Params", "RAM/VRAM", "ZeroGPU", "Access", "Best for"],
+                    value=rows, interactive=False, wrap=True,
+                )
+                gr.Markdown(
+                    "**Routing** scores your query for code / reasoning / creative / translation / "
+                    "summary signals — English **and** Hinglish — in under a millisecond. Hard tasks "
+                    "are upgraded to the cloud API when a token is available, and downgraded to a "
+                    "RAM-safe model when memory is low."
+                )
 
     gr.Markdown(
-        '<p class="footer">Hugging Face Spaces (ZeroGPU) + local CPU/RAM + HF Inference Providers. '
-        "Never commit your HF token — set it as a Space secret. If a token was ever pasted in "
-        "chat, revoke it at huggingface.co/settings/tokens and create a new one.</p>"
+        '<p class="footer">ZeroGPU + local CPU/RAM + HF Inference Providers. '
+        "Chats and downloaded models live in the persistent bucket, keyed by a salted hash of "
+        "your IP. Never commit an HF token — set it as a Space secret.</p>"
     )
 
-    # ---------------- wiring ----------------
+    # ------------------------------------------------ wiring: chat ----------
     preset_dd.change(lambda p: SYSTEM_PRESETS.get(p, ""), inputs=[preset_dd], outputs=[system_tb])
 
-    inputs = [msg_tb, chatbot, model_dd, system_tb, temperature, top_p, max_tokens, file_in]
-    outputs = [chatbot, status_md, routing_md]
+    chat_inputs = [msg_tb, chatbot, model_dd, system_tb, temperature, top_p, max_tokens,
+                   file_in, use_tools, chat_id_state]
+    chat_outputs = [chatbot, status_md, routing_md, chat_id_state, saved_md]
 
-    send_event = send_btn.click(chat_fn, inputs=inputs, outputs=outputs)
-    submit_event = msg_tb.submit(chat_fn, inputs=inputs, outputs=outputs)
+    send_event = send_btn.click(chat_fn, inputs=chat_inputs, outputs=chat_outputs)
+    submit_event = msg_tb.submit(chat_fn, inputs=chat_inputs, outputs=chat_outputs)
     regen_btn.click(
         regenerate_fn,
-        inputs=[chatbot, model_dd, system_tb, temperature, top_p, max_tokens],
-        outputs=outputs,
+        inputs=[chatbot, model_dd, system_tb, temperature, top_p, max_tokens, use_tools],
+        outputs=[chatbot, status_md, routing_md],
     )
     for ev in (send_event, submit_event):
         ev.then(lambda: "", outputs=[msg_tb])
         ev.then(lambda: None, outputs=[file_in])
 
     stop_btn.click(lambda: None, None, None, cancels=[send_event, submit_event])
-    clear_btn.click(lambda: ([], "", ""), outputs=outputs)
+    clear_btn.click(new_chat, outputs=[chatbot, saved_md, chat_id_state, status_md])
     load_btn.click(load_model_btn, inputs=[model_dd], outputs=[status_md, routing_md])
     unload_b.click(unload_btn, outputs=[status_md])
     probe_btn.click(routing_breakdown, inputs=[probe_tb], outputs=[probe_md])
     download_btn.click(transcript_file, inputs=[chatbot], outputs=[download_btn])
-    demo.load(status_text, outputs=[status_md])
+
+    # ------------------------------------------- wiring: saved chats --------
+    def _refresh_chats(request: gr.Request = None):
+        return chats_table(request)
+
+    refresh_chats_btn.click(_refresh_chats, outputs=[chats_df])
+    new_chat_btn.click(new_chat, outputs=[chatbot, saved_md, chat_id_state, status_md])
+    open_btn.click(open_chat, inputs=[open_id_tb],
+                   outputs=[chatbot, saved_md, chat_id_state, status_md])
+    del_btn.click(delete_saved_chat, inputs=[open_id_tb], outputs=[chats_df, saved_md])
+    rename_btn.click(rename_saved_chat, inputs=[rename_id_tb, rename_title_tb],
+                     outputs=[chats_df, saved_md])
+
+    # ---------------------------------------------- wiring: models ---------
+    install_btn.click(install_model_ui, inputs=[install_tb], outputs=[models_df, models_md])
+    refresh_models_btn.click(refresh_models_ui, outputs=[models_df, models_md, model_dd])
+    delete_model_btn.click(delete_model_ui, inputs=[delete_model_tb],
+                           outputs=[models_df, models_md, model_dd])
+
+    # ----------------------------------------------- wiring: tools ---------
+    tool_run.click(tool_button, inputs=[tool_pick, tool_arg], outputs=[tool_out])
+
+    # ---------------------------------------------------- initial load -----
+    def _on_load(request: gr.Request = None):
+        ip = storage.request_ip(request)
+        return (
+            status_text(),
+            chats_table(request),
+            models_table(),
+            storage.storage_summary(),
+            f"👤 Session storage: `{storage.ip_key(ip)}` · "
+            f"{storage.chat_count(ip)} saved chat(s) · {len(storage.installed_models())} installed model(s)",
+        )
+
+    demo.load(_on_load, outputs=[status_md, chats_df, models_df, models_md, chats_status_md])
 
     # ---------------- warm start ----------------
     def _auto_preload() -> None:
@@ -1498,8 +1930,7 @@ with gr.Blocks(**_BLOCKS_KW) as demo:
         ok, msg = MANAGER.load(target, want_gpu=CUDA_AVAILABLE and not HAS_SPACES)
         log.info("Preload: %s", msg)
 
-    # Only warm up when the app is actually served — never on import/test,
-    # where a download attempt would block for minutes.
+    # Only warm up when the app is actually served — never on import/test.
     if __name__ == "__main__":
         threading.Thread(target=_auto_preload, daemon=True).start()
 

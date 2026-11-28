@@ -1,20 +1,19 @@
-# AI Agent — Multi-Model (ZeroGPU + RAM + Cloud API)
-# Hugging Face Spaces installs this automatically on build.
+# AI Agent — Multi-Model (ZeroGPU + RAM + Cloud API + Tools)
+# Hugging Face Spaces installs this on build.
 # Locally:  pip install -r requirements.txt
 
 gradio>=5.0,<6
-huggingface_hub>=0.27
+huggingface_hub>=0.34,<1.0
 transformers>=4.45,<5
 accelerate>=0.34
 sentencepiece>=0.2
 protobuf>=4.25
 psutil>=5.9
+requests>=2.31          # web search / page fetch tools
 
-# torch is provided by the Spaces runtime (CUDA build). Locally install the
-# CPU wheel to keep the download small:
+# torch ships with the Spaces runtime (CUDA build). Locally use the CPU wheel:
 #   pip install torch --index-url https://download.pytorch.org/whl/cpu
 torch>=2.4
 
-# Optional: 4-bit / 8-bit CPU quantisation. Omit on platforms where
-# bitsandbytes has no wheel — the app falls back to fp32 automatically.
+# Optional: 4-bit / 8-bit CPU quantisation. Skipped automatically if unavailable.
 bitsandbytes>=0.43; sys_platform == "linux"

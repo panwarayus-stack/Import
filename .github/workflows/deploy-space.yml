@@ -24,6 +24,8 @@ on:
     branches: [main]
     paths:
       - "ai-agent/app.py"
+      - "ai-agent/storage.py"
+      - "ai-agent/tools.py"
       - "ai-agent/requirements.txt"
       - "ai-agent/README.md"
       - "ai-agent/deploy.py"
@@ -51,7 +53,7 @@ jobs:
           echo "No committed tokens found."
 
       - name: Verify app compiles
-        run: python -m py_compile ai-agent/app.py ai-agent/deploy.py
+        run: python -m py_compile ai-agent/app.py ai-agent/storage.py ai-agent/tools.py ai-agent/deploy.py
 
       - name: Upload to Space
         env:
