@@ -125,32 +125,112 @@ def test_backend_mock_without_torch_or_token():
         assert mod.available_backend(mid) in ("mock", "local", "api")
 
 
-def test_chat_fn_mock_streams_and_records_history():
-    gen = mod.chat_fn("hello there", [], "universal", "", 0.7, 0.9, 64, None)
+class FakeRequest:
+    """Minimal stand-in for gr.Request (the real one is injected by Gradio)."""
+
+    def __init__(self, ip="203.0.113.5"):
+        self.headers = {"x-forwarded-for": ip}
+        self.client = (ip, 1234)
+
+
+def _drain(gen):
     last = None
     for last in gen:
         pass
-    history, status, routing = last
+    return last
+
+
+def test_chat_fn_mock_streams_and_records_history():
+    history, status, routing, chat_id, saved = _drain(
+        mod.chat_fn("hello there", [], "universal", "", 0.7, 0.9, 64, None)
+    )
     assert len(history) == 2
     assert history[0]["role"] == "user"
     assert history[1]["content"].strip()
     assert "Auto-Route" in routing or "Selected" in routing
     assert status
+    # a chat id is allocated and the transcript is persisted
+    assert chat_id
+    assert saved.startswith("💾 Saved")
+
+
+def test_chat_fn_persists_under_ip(tmp_path, monkeypatch):
+    """The transcript lands in <DATA_DIR>/chats/<ip-key>/ and can be reopened."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    import importlib
+    import storage
+    importlib.reload(storage)
+    monkeypatch.setattr(mod, "storage", storage)
+
+    out = _drain(mod.chat_fn("remember 7", [], "universal", "", 0.7, 0.9, 64,
+                             None, True, "", FakeRequest()))
+    chat_id = out[3]
+    rec = storage.load_chat("203.0.113.5", chat_id)
+    assert rec is not None
+    assert rec["messages"][0]["content"] == "remember 7"
+    assert (tmp_path / "chats" / storage.ip_key("203.0.113.5") / f"{chat_id}.json").exists()
+
+
+def test_chat_fn_continues_existing_chat(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    import importlib
+    import storage
+    importlib.reload(storage)
+    monkeypatch.setattr(mod, "storage", storage)
+
+    req = FakeRequest("198.51.100.7")
+    first = _drain(mod.chat_fn("one", [], "universal", "", 0.7, 0.9, 64, None, True, "", req))
+    cid = first[3]
+    second = _drain(mod.chat_fn("two", first[0], "universal", "", 0.7, 0.9, 64, None,
+                                True, cid, req))
+    assert second[3] == cid                       # same conversation
+    rec = storage.load_chat("198.51.100.7", cid)
+    assert len(rec["messages"]) == 4              # 2 turns kept in one file
 
 
 def test_chat_fn_empty_message_is_guarded():
-    history, status, routing = next(mod.chat_fn("   ", [], "universal", "", 0.7, 0.9, 64, None))
+    history, status, routing, chat_id, saved = next(
+        mod.chat_fn("   ", [], "universal", "", 0.7, 0.9, 64, None))
     assert history == []
     assert "Type a message" in status
 
 
 def test_chat_fn_with_tupple_history():
-    gen = mod.chat_fn("and again", [("hi", "hello")], "universal", "", 0.7, 0.9, 32, None)
-    for out in gen:
-        pass
+    out = _drain(mod.chat_fn("and again", [("hi", "hello")], "universal", "",
+                             0.7, 0.9, 32, None))
     history = out[0]
     assert history[0]["content"] == "hi"
     assert len(history) == 4
+
+
+def test_chat_fn_tools_appendix(tmp_path, monkeypatch):
+    """Tool output is embedded in the assistant message, not silently dropped."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    import importlib
+    import storage
+    importlib.reload(storage)
+    monkeypatch.setattr(mod, "storage", storage)
+
+    out = _drain(mod.chat_fn("calculate 2+2", [], "universal", "", 0.7, 0.9, 64,
+                             None, True))
+    routing = out[2]
+    assert "Tools:" in routing
+    assert "calculator" in routing
+    assert "<details>" in out[0][-1]["content"]
+    assert "= **4**" in out[0][-1]["content"]
+
+
+def test_chat_fn_tools_can_be_disabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    import importlib
+    import storage
+    importlib.reload(storage)
+    monkeypatch.setattr(mod, "storage", storage)
+
+    out = _drain(mod.chat_fn("calculate 2+2", [], "universal", "", 0.7, 0.9, 64,
+                             None, False))
+    assert "Tools:" not in out[2]
+    assert "<details>" not in out[0][-1]["content"]
 
 
 def test_read_upload_limits_size(tmp_path):
@@ -162,5 +242,27 @@ def test_read_upload_limits_size(tmp_path):
 
 
 def test_regenerate_without_history_is_safe():
-    history, status, _ = next(mod.regenerate_fn([], "universal", "", 0.7, 0.9, 32))
+    history, status, _, _, _ = next(mod.regenerate_fn([], "universal", "", 0.7, 0.9, 32))
     assert history == [] and "Nothing" in status
+
+
+def test_local_models_enter_registry(tmp_path, monkeypatch):
+    """A downloaded model must appear in the dropdown choices."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    import importlib
+    import storage
+    importlib.reload(storage)
+    monkeypatch.setattr(mod, "storage", storage)
+
+    target = tmp_path / "models" / "owner__demo"
+    target.mkdir(parents=True)
+    (target / "config.json").write_text("{}", encoding="utf-8")
+    storage.upsert_installed({
+        "id": "local/demo", "kind": "model", "source": "owner/demo",
+        "path": str(target), "status": "ready", "files": 1, "size_bytes": 10,
+    })
+    added = mod.refresh_local_models()
+    assert added == 1
+    assert "local/demo" in mod.MODEL_REGISTRY
+    assert any(c[1] == "local/demo" for c in mod.all_model_choices())
+    assert mod.refresh_local_models() == 0        # idempotent

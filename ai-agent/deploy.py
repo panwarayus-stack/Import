@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-FILES = ["app.py", "requirements.txt", "README.md"]
+FILES = ["app.py", "storage.py", "tools.py", "requirements.txt", "README.md"]
 
 
 def main() -> int:

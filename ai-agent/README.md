@@ -30,8 +30,52 @@ plain CPU box, or purely through the **HF Inference Providers cloud API**.
 | ☁️ **Cloud tier** | 70B–480B models via HF Inference Providers — need only `HF_TOKEN`, no GPU, no download |
 | ⚡ **ZeroGPU** | `@spaces.GPU(duration=120)` — free GPU on Spaces, allocated **per generation**, not per session |
 | 💾 **RAM-first loading** | Weights are loaded **once into CPU RAM** (outside the GPU window), then moved to the GPU only while tokens stream, and moved back afterwards. Switching models frees the old one first — one model resident at a time. |
+| 🗂️ **Persistent chats** | Every conversation is saved to the bucket under `/data/chats/<hashed-ip>/`, **per client IP** (salted hash — the raw address is never stored). Survives Space restarts and rebuilds; reopen, rename, delete from the *Chats* tab. |
+| 📦 **Install models from chat** | A *Models* tab, a tool, and plain language (`"install Qwen/Qwen2.5-1.5B-Instruct"`) all download a model **or dataset** into `/data/models/`. Installed models appear in the dropdown as 📦 and load like built-ins. |
+| 🌐 **Internet tools** | Web search (DuckDuckGo HTML/lite → Wikipedia fallback), page reading, safe calculator (no `eval`), clock, dataset inspection. The model can call them itself and its answers cite URLs. |
 | ⏩ **Fast** | Token streaming, SDPA attention, `use_cache`, left-padded inputs, thread-tuned CPU, warm-model reuse, no re-tokenising the system prompt |
 | 🛟 **Resilient** | If a local load fails (OOM, gated repo, no GPU) the request transparently falls back to the cloud API; a crashed generation reports the error instead of hanging the chat |
+
+## Persistent storage (per IP)
+
+Everything lives in one bucket (default `/data`, as on HF Spaces persistent
+storage; override with `DATA_DIR`):
+
+```
+/data/
+├── chats/<ip-key>/index.json          chat list for that IP
+├── chats/<ip-key>/<chat-id>.json      full transcript (atomic writes)
+├── models/index.json                  installed models + datasets
+├── models/<owner>__<name>/            snapshot_download() output
+├── uploads/<ip-key>/<file>            attachments kept with the chat
+└── meta.json
+```
+
+* `ip-key` is `sha256($DATA_IP_SALT + ip)[:20]` — stable per IP across restarts,
+  not reversible, and rotating the salt forks the namespace.
+* IP comes from `X-Forwarded-For` / `X-Real-IP` / `CF-Connecting-IP`, falling
+  back to the socket peer — so it works behind the Spaces proxy.
+* Isolation is enforced in code: IP A cannot open, rename or delete IP B's chat.
+* Writes are temp-file + `os.replace`, so an interrupted save can't corrupt a
+  transcript, and a corrupt index degrades to "empty" instead of crashing.
+* No `/data`? It falls back to `/root/data` → `./data` → temp dir. Check the
+  status line or the startup log for which root is in use.
+
+## Tools
+
+| Tool | What it does |
+|---|---|
+| `web_search` | DuckDuckGo HTML → lite → Wikipedia API fallback; returns titles, URLs, snippets |
+| `fetch_page` | Downloads a page and converts it to readable text (scripts/styles stripped) |
+| `calculator` | AST-based arithmetic — `sqrt`, `log`, `sin`, factorial, `pi`; `eval` is never used |
+| `current_time` | Time in any IANA timezone |
+| `install_model` | Downloads a HF model/dataset snapshot into the bucket |
+| `list_installed` | What is already downloaded |
+| `dataset_overview` | Lists a repo's files without downloading it |
+
+Enabled by the **🔧 Use tools** checkbox in chat, or run any of them directly in
+the *Tools* tab. Tool output is appended to the reply in a collapsible
+*Tools used* block, so you can see exactly what the model was told.
 
 ## UI features
 
@@ -108,6 +152,11 @@ run if a token is ever found committed in the repo.
 | `PREFER_API` | `0` | Prefer cloud models over local weights (fastest cold start) |
 | `ZEROGPU_DURATION` | `120` | Seconds requested per ZeroGPU allocation |
 | `GENERATION_IDLE_TIMEOUT` | `180` | Abort a generation that stops producing tokens |
+| `DATA_DIR` | auto | Storage root. First writable of `$DATA_DIR`, `/data`, `/root/data`, `./data`, temp |
+| `DATA_IP_SALT` | `ai-agent-v1` | Salt for the IP→directory hash. Change it to start a fresh namespace |
+| `WEB_TOOLS` | `1` | `0` disables search/fetch entirely |
+| `MAX_TOOL_ROUNDS` | `3` | Max model-initiated tool calls per turn |
+| `TOOL_HTTP_TIMEOUT` | `20` | Per-request timeout for tool HTTP calls |
 | `PORT` / `HOST` | `7860` / `0.0.0.0` | Server bind |
 
 ## Tests
@@ -116,7 +165,9 @@ run if a token is ever found committed in the repo.
 python -m pytest ai-agent/tests -v
 ```
 
-- `test_router.py` — routing, RAM downgrades, history handling, mock streaming, file attachment, transcript
+- `test_storage.py` — per-IP isolation, atomic writes, chat id sanitisation, source parsing, install records
+- `test_tools.py` — calculator safety (blocks `eval`, attribute access, huge exponents), HTML→text, tool schema, intent detection
+- `test_router.py` — routing, RAM downgrades, history handling, mock streaming, tools in chat, persistence, file attachment
 - `test_local_inference.py` — **real** load/stream/unload using a tiny randomly-initialised Llama, plus a regression test that a failing `generate()` cannot hang the UI
 
 ## Notes
