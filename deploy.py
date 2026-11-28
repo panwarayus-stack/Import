@@ -24,6 +24,92 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 FILES = ["app.py", "storage.py", "tools.py", "requirements.txt", "README.md"]
+# NOTE: deploy.py itself is not uploaded — the Space never runs it.
+
+
+REQUIRED = ("app.py", "requirements.txt", "README.md")
+
+
+def _check_space_config(readme: str) -> list[str]:
+    """Validate the Space card + requirements the way Spaces will read them."""
+    problems: list[str] = []
+    if not readme.startswith("---"):
+        problems.append("README.md has no YAML front-matter — Spaces will not detect the app")
+        return problems
+
+    try:
+        front = readme.split("---", 2)[1]
+    except IndexError:
+        problems.append("README.md front-matter is not closed with '---'")
+        return problems
+
+    if "app_file:" not in front:
+        problems.append("README.md front-matter is missing 'app_file:'")
+    if "sdk: gradio" not in front:
+        problems.append("README.md front-matter is missing 'sdk: gradio'")
+    if "sdk_version:" in front:
+        problems.append(
+            "README.md pins 'sdk_version' — this fights the runtime's own Gradio and "
+            "can fail the build; remove it"
+        )
+    return problems
+
+
+def _check_requirements(path: Path) -> list[str]:
+    """A 'gradio' pin here collides with the runtime's gradio[oauth,mcp]==X."""
+    problems: list[str] = []
+    if not path.exists():
+        return ["requirements.txt is missing"]
+    import re
+
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if re.match(r"(?i)gradio(\[[^\]]*\])?\s*[<>=!~]", line):
+            problems.append(
+                f"requirements.txt pins gradio ({line!r}) — the Space installs its own "
+                "Gradio in the same pip run and the build fails with ResolutionImpossible"
+            )
+    return problems
+
+
+def _dry_run(args) -> int:
+    """Validate everything we can locally, then report what would be uploaded."""
+    print(f"DRY RUN — nothing will be uploaded (space: {args.space})\n")
+    problems: list[str] = []
+
+    for name in REQUIRED:
+        if not (HERE / name).exists():
+            problems.append(f"required file missing: {name}")
+
+    readme_path = HERE / "README.md"
+    if readme_path.exists():
+        problems += _check_space_config(readme_path.read_text(encoding="utf-8"))
+    problems += _check_requirements(HERE / "requirements.txt")
+
+    total = 0
+    print("Would upload:")
+    for name in FILES:
+        path = HERE / name
+        if not path.exists():
+            print(f"  - {name:20s} MISSING")
+            continue
+        size = path.stat().st_size
+        total += size
+        print(f"  - {name:20s} {size / 1024:8.1f} KB")
+    print(f"  total {total / 1024:.1f} KB → repo {args.space}")
+
+    if problems:
+        print("\n❌ Problems that would break the Space build:")
+        for p in problems:
+            print(f"   - {p}")
+        return 4
+
+    print("\n✅ Config looks valid for a Spaces build "
+          "(no gradio pin, no sdk_version, app_file present).")
+    print("   Re-run without --dry-run on a machine that can reach huggingface.co.")
+    return 0
 
 
 def main() -> int:
@@ -37,7 +123,12 @@ def main() -> int:
     ap.add_argument("--secret", action="append", default=[], metavar="KEY=VALUE",
                     help="Add/update a Space secret (e.g. --secret HF_TOKEN=hf_...)")
     ap.add_argument("--restart", action="store_true", help="Restart the Space after upload")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="Validate the files and the Space config without uploading")
     args = ap.parse_args()
+
+    if args.dry_run:
+        return _dry_run(args)
 
     token = (args.token or "").strip()
     if not token:
