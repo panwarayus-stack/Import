@@ -289,6 +289,29 @@ function loadConfig(overrides = {}) {
       maxOpenRouterCallsPerDay: int('MAX_AI_CALLS_PER_DAY', 40, { min: 1, max: 5000 }),
     },
 
+    telegram: {
+      hfBaseUrl: str('TELEGRAM_HF_BASE_URL', 'https://huggingface.co').replace(/\/+$/, ''),
+      syncDir: absPath('TELEGRAM_SYNC_DIR', path.join('data', 'telegram')),
+      search: {
+        defaultLimit: int('TELEGRAM_SEARCH_DEFAULT_LIMIT', 50, { min: 1, max: 1000 }),
+        maxLimit: int('TELEGRAM_SEARCH_MAX_LIMIT', 500, { min: 1, max: 1000 }),
+      },
+      // Comma-separated list of "owner/name" buckets to inventory. Defaults to
+      // the seven Apimaking Telegram buckets; Tgdata-bucket-fulltelegram is
+      // intentionally omitted (byte-for-byte duplicate of Tgdata-bucket).
+      buckets: list(
+        'TELEGRAM_BUCKETS',
+        [
+          'Apimaking/Telegram-bucket',
+          'Apimaking/Tg-num',
+          'Apimaking/Tgdata-bucket',
+          'Apimaking/telegram-databases-bucket',
+          'Apimaking/MergedTgfulldatabase',
+          'Apimaking/media-monitoring-telegram-bucket',
+        ],
+      ),
+    },
+
     // Simulation switches. These are never used to *claim* success; every job
     // artifact records whether it came from a dry run.
     dryRun: {

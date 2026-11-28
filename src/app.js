@@ -11,6 +11,7 @@ const express = require('express');
 const path = require('node:path');
 const { authMiddleware, requireAuth, requireSameOrigin, createAuthRouter } = require('./routes/auth');
 const { createApiRouter } = require('./routes/api');
+const { createTelegramRouter } = require('./routes/telegram');
 const { createDashboardRouter } = require('./routes/dashboard');
 
 function securityHeaders(config) {
@@ -59,6 +60,12 @@ function createApp({ config, db, logger, worker, scheduler, oauth, comments, ope
     requireAuth(config),
     requireSameOrigin,
     createApiRouter({ config, db, logger, worker, scheduler, oauth, comments, openrouter }),
+  );
+  app.use(
+    '/api/telegram',
+    requireAuth(config),
+    requireSameOrigin,
+    createTelegramRouter(),
   );
   app.use('/api', (req, res) => res.status(404).json({ error: 'Unknown API route' }));
 
