@@ -99,3 +99,61 @@ def test_chat_message_content_normalisation_for_gradio6():
     cleaned = mod._clean_history(g6_history)
     assert [m["content"] for m in cleaned] == ["hello there", "hi!"]
     assert all(isinstance(m["content"], str) for m in cleaned)
+
+
+# ------------------------------------------------------- deploy dry-run -------
+def _deploy_module():
+    import importlib
+
+    sys.path.insert(0, str(ROOT))
+    return importlib.import_module("deploy")
+
+
+def test_deploy_dry_run_passes_on_the_real_repo(capsys):
+    mod = _deploy_module()
+    rc = mod.main.__wrapped__ if hasattr(mod.main, "__wrapped__") else None  # not wrapped
+    # Call the internal helpers directly so we never touch the network.
+    problems = mod._check_space_config((ROOT / "README.md").read_text(encoding="utf-8"))
+    problems += mod._check_requirements(ROOT / "requirements.txt")
+    assert problems == [], f"repo config would break the Space build: {problems}"
+
+
+def test_dry_run_detects_a_gradio_pin(tmp_path):
+    mod = _deploy_module()
+    req = tmp_path / "requirements.txt"
+    req.write_text("gradio>=5.0,<6\n", encoding="utf-8")
+    problems = mod._check_requirements(req)
+    assert problems and "ResolutionImpossible" in problems[0]
+
+
+def test_dry_run_ignores_gradio_in_comments(tmp_path):
+    mod = _deploy_module()
+    req = tmp_path / "requirements.txt"
+    req.write_text("# do not pin gradio<6 here\nrequests>=2.31\n", encoding="utf-8")
+    assert mod._check_requirements(req) == []
+
+
+def test_dry_run_detects_sdk_version_pin():
+    mod = _deploy_module()
+    readme = "---\nsdk: gradio\nsdk_version: 5.50.0\napp_file: app.py\n---\n# x\n"
+    problems = mod._check_space_config(readme)
+    assert any("sdk_version" in p for p in problems)
+
+
+def test_dry_run_requires_front_matter():
+    mod = _deploy_module()
+    problems = mod._check_space_config("# no front matter\n")
+    assert problems and "front-matter" in problems[0]
+
+
+def test_dry_run_reports_missing_app_file():
+    mod = _deploy_module()
+    readme = "---\nsdk: gradio\n---\n"
+    assert any("app_file" in p for p in mod._check_space_config(readme))
+
+
+def test_dry_run_does_not_upload_itself():
+    mod = _deploy_module()
+    assert "deploy.py" not in mod.FILES
+    assert set(mod.FILES) == {"app.py", "storage.py", "tools.py",
+                              "requirements.txt", "README.md"}

@@ -140,6 +140,16 @@ uploads the files, sets the secret and restarts it. It needs outbound access to
 `huggingface.co` — if the machine/network cannot reach HF it says so explicitly
 instead of blaming the token.
 
+### Check the Space config before deploying
+
+```bash
+python deploy.py --dry-run      # validates files + Space card, uploads nothing
+```
+
+It fails (exit 4) on the exact mistakes that break a Spaces build: a `gradio`
+pin in `requirements.txt`, an `sdk_version` in this card, a missing `app_file`,
+or missing files. Safe to run anywhere — no network needed.
+
 ### Deploy from GitHub instead (no local setup)
 
 `.github/workflows/deploy-space.yml` uploads the app files to the Space from a
